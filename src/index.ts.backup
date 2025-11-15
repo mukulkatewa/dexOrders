@@ -1,0 +1,267 @@
+/**
+ * ORDER EXECUTION ENGINE - Main Server
+ */
+import dotenv from 'dotenv';
+import path from 'path';
+
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+
+console.log('🔍 Starting application...');
+console.log('📋 Environment check:');
+console.log('  DATABASE_URL:', process.env.DATABASE_URL ? '✅ Loaded' : '❌ Missing');
+console.log('  REDIS_HOST:', process.env.REDIS_HOST || '❌ Missing');
+console.log('  PORT:', process.env.PORT || '3000');
+
+import Fastify from 'fastify';
+import websocketPlugin from '@fastify/websocket';
+import cors from '@fastify/cors';
+import { v4 as uuidv4 } from 'uuid';
+import { Database } from './database/db';
+import { OrderRepository } from './repositories/orderRepository';
+import { RedisService } from './services/redisService';
+import { OrderQueue } from './services/orderQueue';
+import { Order, OrderRequest } from './types';
+import { errorHandler } from './services/errorHandler';
+import { ValidationError, NotFoundError } from './errors/customErrors';
+
+console.log('✅ All imports loaded successfully');
+
+const fastify = Fastify({
+  logger: { level: process.env.NODE_ENV === 'development' ? 'info' : 'warn' },
+});
+
+let database: Database;
+let orderRepository: OrderRepository;
+let redisService: RedisService;
+let orderQueue: OrderQueue;
+
+function validateOrderRequest(body: any): asserts body is OrderRequest {
+  if (!body) throw new ValidationError('Request body is required');
+  if (!body.tokenIn || typeof body.tokenIn !== 'string') throw new ValidationError('tokenIn is required and must be a string');
+  if (!body.tokenOut || typeof body.tokenOut !== 'string') throw new ValidationError('tokenOut is required and must be a string');
+  if (body.tokenIn === body.tokenOut) throw new ValidationError('tokenIn and tokenOut must be different');
+  if (typeof body.amountIn !== 'number' || body.amountIn <= 0) throw new ValidationError('amountIn must be a positive number');
+  if (body.amountIn > 1000000) throw new ValidationError('amountIn exceeds maximum (1,000,000)');
+  if (body.slippage !== undefined && (typeof body.slippage !== 'number' || body.slippage < 0 || body.slippage > 0.5)) {
+    throw new ValidationError('slippage must be between 0 and 0.5');
+  }
+}
+
+async function initializeServices() {
+  try {
+    console.log('🔧 Initializing services...');
+    console.log('  📊 Initializing database...');
+    database = new Database();
+    await database.initialize();
+    orderRepository = new OrderRepository(database.getPool());
+    console.log('  ✅ Database ready');
+
+    console.log('  📦 Initializing Redis...');
+    redisService = new RedisService();
+    let retries = 0;
+    while (!redisService.isHealthy() && retries < 10) {
+      console.log(`  ⏳ Waiting for Redis... (${retries + 1}/10)`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      retries++;
+    }
+    if (!redisService.isHealthy()) throw new Error('Redis failed to connect after 10 retries');
+    console.log('  ✅ Redis ready');
+
+    console.log('  📋 Initializing order queue...');
+    orderQueue = new OrderQueue(orderRepository, redisService);
+    console.log('  ✅ Order queue ready');
+    console.log('✅ All services initialized successfully');
+  } catch (error) {
+    console.error('❌ Service initialization failed:', error);
+    if (error instanceof Error) {
+      console.error('Error details:', error.message);
+      console.error('Stack:', error.stack);
+    }
+    throw error;
+  }
+}
+
+async function registerPlugins() {
+  try {
+    console.log('🔌 Registering plugins...');
+    await fastify.register(cors, { origin: process.env.NODE_ENV === 'development' ? true : false });
+    console.log('  ✅ CORS registered');
+    await fastify.register(websocketPlugin);
+    console.log('  ✅ WebSocket registered');
+    console.log('✅ Plugins registered successfully');
+  } catch (error) {
+    console.error('❌ Plugin registration failed:', error);
+    throw error;
+  }
+}
+
+async function start() {
+  console.log('\n🚀 Starting server...\n');
+  
+  try {
+    await initializeServices();
+    await registerPlugins();
+
+    fastify.get('/health', async (request, reply) => {
+      try {
+        const dbHealthy = await database.healthCheck().catch(() => false);
+        const redisHealthy = redisService.isHealthy();
+        const response = {
+          status: dbHealthy && redisHealthy ? 'healthy' : 'degraded',
+          timestamp: new Date().toISOString(),
+          services: { database: dbHealthy ? 'up' : 'down', redis: redisHealthy ? 'up' : 'down' },
+        };
+        reply.raw.writeHead(200, { 'Content-Type': 'application/json' });
+        reply.raw.end(JSON.stringify(response));
+        return reply;
+      } catch (error) {
+        const errorResponse = {
+          status: 'unhealthy',
+          timestamp: new Date().toISOString(),
+          services: { database: 'down', redis: 'down' },
+        };
+        reply.raw.writeHead(503, { 'Content-Type': 'application/json' });
+        reply.raw.end(JSON.stringify(errorResponse));
+        return reply;
+      }
+    });
+
+    fastify.get<{ Querystring: { limit?: string; offset?: string } }>('/api/orders', async (request) => {
+      const limit = Math.min(parseInt(request.query.limit || '50'), 1000);
+      const offset = Math.max(parseInt(request.query.offset || '0'), 0);
+      const orders = await orderRepository.getOrders(limit, offset);
+      return { orders, pagination: { limit, offset, count: orders.length } };
+    });
+
+    fastify.get<{ Params: { orderId: string } }>('/api/orders/:orderId', async (request) => {
+      const { orderId } = request.params;
+      if (!orderId || orderId.trim() === '') throw new ValidationError('orderId is required');
+      let order = await redisService.getActiveOrder(orderId);
+      if (!order) order = await orderRepository.getOrderById(orderId);
+      if (!order) throw new NotFoundError('Order', orderId);
+      return order;
+    });
+
+    fastify.route({
+      method: 'GET',
+      url: '/api/orders/execute',
+      handler: (request, reply) => {
+        reply.code(426).send({ error: 'Upgrade Required - Use WebSocket connection' });
+      },
+      wsHandler: (connection, request) => {
+        let order: Order | undefined;
+        const ws = connection as any;
+        try {
+          const body = request.body as any;
+          validateOrderRequest(body);
+          order = {
+            id: uuidv4(),
+            tokenIn: body.tokenIn,
+            tokenOut: body.tokenOut,
+            amountIn: body.amountIn,
+            orderType: body.orderType || 'market',
+            status: 'pending',
+            retryCount: 0,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+
+          orderRepository.createOrder(order)
+            .then(() => redisService.setActiveOrder(order!))
+            .then(() => {
+              ws.send(JSON.stringify({
+                orderId: order!.id,
+                status: 'pending',
+                message: 'Order received and queued for execution',
+                timestamp: Date.now(),
+              }));
+              orderQueue.registerWebSocket(order!.id, ws);
+              return orderQueue.addOrder(order!);
+            })
+            .then(() => console.log(`📝 Order ${order!.id} created and queued`))
+            .catch((error: Error) => {
+              console.error('❌ Order processing error:', error);
+              errorHandler.handleWebSocketError(error, ws, order?.id);
+            });
+
+          ws.on('close', () => {
+            if (order) {
+              orderQueue.unregisterWebSocket(order.id);
+              console.log(`🔌 WebSocket closed for order ${order.id}`);
+            }
+          });
+
+          ws.on('error', (error: Error) => {
+            if (order) {
+              console.error(`❌ WebSocket error for order ${order.id}:`, error);
+              errorHandler.handleWebSocketError(error, ws, order.id);
+              orderQueue.unregisterWebSocket(order.id);
+            }
+          });
+        } catch (error) {
+          console.error('❌ Order creation error:', error);
+          errorHandler.handleWebSocketError(error instanceof Error ? error : new Error(String(error)), ws, order?.id);
+          try { ws.close(); } catch (closeError) { console.error('Failed to close WebSocket:', closeError); }
+        }
+      },
+    });
+
+    fastify.setErrorHandler(async (error, request, reply) => {
+      await errorHandler.handleError(error instanceof Error ? error : new Error(String(error)), request, reply);
+    });
+
+    const port = parseInt(process.env.PORT || '3000');
+    const host = process.env.HOST || '0.0.0.0';
+    await fastify.listen({ port, host });
+
+    console.log(`\n✅ Server running at http://localhost:${port}`);
+    console.log(`📡 WebSocket endpoint: ws://localhost:${port}/api/orders/execute`);
+    console.log('\n📋 Available endpoints:');
+    console.log(`   GET  /health`);
+    console.log(`   GET  /api/orders`);
+    console.log(`   GET  /api/orders/:orderId`);
+    console.log(`   POST /api/orders/execute (WebSocket upgrade)\n`);
+  } catch (error) {
+    console.error('\n❌ Server startup error:', error);
+    if (error instanceof Error) {
+      console.error('Error message:', error.message);
+      console.error('Stack trace:', error.stack);
+    }
+    process.exit(1);
+  }
+}
+
+async function shutdown(signal: string) {
+  console.log(`\n⏹️  Received ${signal}, shutting down gracefully...`);
+  try {
+    if (orderQueue) await orderQueue.close();
+    if (redisService) await redisService.close();
+    if (database) await database.close();
+    await fastify.close();
+    console.log('✅ Shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error);
+    process.exit(1);
+  }
+}
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('🚨 Unhandled Promise Rejection at:', promise);
+  console.error('🚨 Reason:', reason);
+  errorHandler.handleUnhandledRejection(reason, promise);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('🚨 Uncaught Exception:', error);
+  errorHandler.handleUncaughtException(error);
+});
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+console.log('🎬 Calling start() function...');
+start().catch((error) => {
+  console.error('🚨 Fatal error during startup:', error);
+  process.exit(1);
+});
