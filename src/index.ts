@@ -312,8 +312,8 @@ async function start() {
 
             ws.send(JSON.stringify({
               orderId: order.id,
-              status: 'connected',
-              message: 'WebSocket connected. Starting order execution...',
+              status: 'pending',
+              message: 'Order received and queued for execution',
               timestamp: Date.now(),
             }));
 

@@ -194,20 +194,71 @@ GET /api/orders?limit=50&offset=0
 GET /api/orders/:orderId
 
 
-#### 4. Execute Order (WebSocket)
-Connect via WebSocket client (e.g., wscat)
-wscat -c ws://localhost:3000/api/orders/execute
+#### 4. Execute Order (POST + WebSocket)
 
-Send order request
-{"tokenIn":"SOL","tokenOut":"USDC","amountIn":100,"orderType":"market"}
+**Step 1 – Submit order via HTTP POST**
 
+`POST /api/orders/execute`
 
-**Real-time updates received:**
-{"orderId":"uuid","status":"pending","message":"Order received and queued for execution"}
-{"orderId":"uuid","status":"routing","message":"Comparing DEX prices"}
-{"orderId":"uuid","status":"routing","message":"Selected raydium","data":{"selectedDex":"raydium","estimatedOutput":5.06}}
-{"orderId":"uuid","status":"building","message":"Creating transaction"}
-{"orderId":"uuid","status":"confirmed","message":"Transaction successful","data":{"txHash":"...","executedPrice":0.0506,"amountOut":5.06,"selectedDex":"raydium"}}
+Request:
+```json
+{
+  "tokenIn": "SOL",
+  "tokenOut": "USDC",
+  "amountIn": 25,
+  "orderType": "market",
+  "slippage": 0.02
+}
+```
+
+Response:
+```json
+{
+  "orderId": "uuid",
+  "status": "pending",
+  "message": "Order created. Connect to WebSocket for real-time updates.",
+  "websocketUrl": "/api/orders/execute?orderId=uuid"
+}
+```
+
+**Step 2 – Automatically subscribe to live updates**
+
+In a real client (frontend or Node script), the same logical flow performs the POST and then immediately opens a WebSocket for that `orderId`:
+
+```ts
+const res = await fetch('http://localhost:3000/api/orders/execute', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ tokenIn: 'SOL', tokenOut: 'USDC', amountIn: 25, orderType: 'market', slippage: 0.02 }),
+});
+
+const { orderId } = await res.json();
+
+const ws = new WebSocket(`ws://localhost:3000/api/orders/execute?orderId=${orderId}`);
+ws.onmessage = (event) => {
+  const update = JSON.parse(event.data);
+  console.log('Order update:', update);
+};
+```
+
+From the user’s point of view they “just submit an order”, and the client code automatically starts streaming WebSocket updates for that order.
+
+**Node CLI demo (this repository)**
+
+You can see this full flow using the provided client script, which first POSTs the order and then automatically opens the WebSocket:
+
+```bash
+npm run client -- --tokenIn=SOL --tokenOut=USDC --amount=25 --slippage=0.02
+```
+
+This prints the created `orderId` and then the live status stream:
+
+- `pending` – Order received and queued
+- `routing` – Comparing DEX prices / selecting Raydium vs Meteora
+- `building` – Creating transaction
+- `submitted` – Transaction sent to network
+- `confirmed` – Transaction successful (includes `txHash`, execution price, amountOut, selected DEX)
+- `failed` – If any step fails (includes error message)
 
 
 ### Bot Endpoints
@@ -317,14 +368,28 @@ Test all endpoints using the provided cURL commands in the API documentation abo
 
 ### WebSocket Testing
 
-Install wscat globally
+If you want to test the WebSocket endpoint manually (without the Node client), you can still use `wscat` with an `orderId` returned from the POST step.
+
+1. Create an order via POST:
+
+```bash
+curl -X POST http://localhost:3000/api/orders/execute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tokenIn": "SOL",
+    "tokenOut": "USDC",
+    "amountIn": 25,
+    "orderType": "market",
+    "slippage": 0.02
+  }'
+```
+
+2. Copy the `orderId` from the response and connect with `wscat`:
+
+```bash
 npm install -g wscat
-
-Connect to WebSocket endpoint
-wscat -c ws://localhost:3000/api/orders/execute
-
-Send order
-{"tokenIn":"SOL","tokenOut":"USDC","amountIn":100,"orderType":"market"}
+wscat -c "ws://localhost:3000/api/orders/execute?orderId=<ORDER_ID>"
+```
 
 ### Complete Bot Testing Script
 
