@@ -11,10 +11,10 @@ const pathqwqw = dotenv.config({ path: path.resolve(__dirname, '../.env') });
 console.log("check check:",pathqwqw);
 
 
-console.log('🔍 Starting application...');
-console.log('📋 Environment check:');
-console.log('  DATABASE_URL:', process.env.DATABASE_URL ? '✅ Loaded' : '❌ Missing');
-console.log('  REDIS_HOST:', process.env.REDIS_HOST || '❌ Missing');
+console.log('Starting application...');
+console.log('Environment check:');
+console.log('  DATABASE_URL:', process.env.DATABASE_URL ? 'Loaded' : 'Missing');
+console.log('  REDIS_HOST:', process.env.REDIS_HOST || 'Missing');
 console.log('  PORT:', process.env.PORT || '3000');
 
 // Import dependencies
@@ -26,16 +26,17 @@ import { Database } from './database/db';
 import { OrderRepository } from './repositories/orderRepository';
 import { RedisService } from './services/redisService';
 import { OrderQueue } from './services/orderQueue';
-import { Order, OrderRequest } from './types';
+import { Order, OrderRequest, RoutingStrategy } from './types';
 import { errorHandler } from './services/errorHandler';
 import { ValidationError, NotFoundError } from './errors/customErrors';
 import { BotManager } from './bots/botManager';
 import { ArbitrageBot } from './bots/arbitrageBot';
 import { BotConfig } from './bots/autoTradingBot';
+import { MockDexRouter } from './services/mockDexRouter';
 
 
 
-console.log('✅ All imports loaded successfully');
+console.log('All imports loaded successfully');
 
 // Initialize Fastify
 const fastify = Fastify({
@@ -46,12 +47,20 @@ const fastify = Fastify({
 
 const botManager = new BotManager();
 const arbitrageBot = new ArbitrageBot(0.02);
+const httpDexRouter = new MockDexRouter();
 
 // Global service instances
 let database: Database;
 let orderRepository: OrderRepository;
 let redisService: RedisService;
 let orderQueue: OrderQueue;
+
+const ROUTING_STRATEGIES: RoutingStrategy[] = [
+  'BEST_PRICE',
+  'LOWEST_SLIPPAGE',
+  'HIGHEST_LIQUIDITY',
+  'FASTEST_EXECUTION',
+];
 
 /**
  * Validate incoming order requests
@@ -86,6 +95,12 @@ function validateOrderRequest(body: any): asserts body is OrderRequest {
       throw new ValidationError('slippage must be between 0 and 0.5');
     }
   }
+
+  if (body.routingStrategy !== undefined) {
+    if (!ROUTING_STRATEGIES.includes(body.routingStrategy)) {
+      throw new ValidationError('routingStrategy is invalid');
+    }
+  }
 }
 
 /**
@@ -93,20 +108,20 @@ function validateOrderRequest(body: any): asserts body is OrderRequest {
  */
 async function initializeServices() {
   try {
-    console.log('🔧 Initializing services...');
+    console.log('Initializing services...');
 
-    console.log('  📊 Initializing database...');
+    console.log('  Initializing database...');
     database = new Database();
     await database.initialize();
     orderRepository = new OrderRepository(database.getPool());
-    console.log('  ✅ Database ready');
+    console.log('  Database ready');
 
-    console.log('  📦 Initializing Redis...');
+    console.log('  Initializing Redis...');
     redisService = new RedisService();
 
     let retries = 0;
     while (!redisService.isHealthy() && retries < 10) {
-      console.log(`  ⏳ Waiting for Redis... (${retries + 1}/10)`);
+      console.log(`  Waiting for Redis... (${retries + 1}/10)`);
       await new Promise((resolve) => setTimeout(resolve, 500));
       retries++;
     }
@@ -114,15 +129,15 @@ async function initializeServices() {
     if (!redisService.isHealthy()) {
       throw new Error('Redis failed to connect after 10 retries');
     }
-    console.log('  ✅ Redis ready');
+    console.log('  Redis ready');
 
-    console.log('  📋 Initializing order queue...');
+    console.log('  Initializing order queue...');
     orderQueue = new OrderQueue(orderRepository, redisService);
-    console.log('  ✅ Order queue ready');
+    console.log('  Order queue ready');
 
-    console.log('✅ All services initialized successfully');
+    console.log('All services initialized successfully');
   } catch (error) {
-    console.error('❌ Service initialization failed:', error);
+    console.error('Service initialization failed:', error);
     throw error;
   }
 }
@@ -132,20 +147,20 @@ async function initializeServices() {
  */
 async function registerPlugins() {
   try {
-    console.log('🔌 Registering plugins...');
+    console.log('Registering plugins...');
     
     await fastify.register(cors, {
       origin: true,
       credentials: true,
     });
-    console.log('  ✅ CORS registered');
+    console.log('  CORS registered');
 
     await fastify.register(websocketPlugin);
-    console.log('  ✅ WebSocket registered');
+    console.log('  WebSocket registered');
 
-    console.log('✅ Plugins registered successfully');
+    console.log('Plugins registered successfully');
   } catch (error) {
-    console.error('❌ Plugin registration failed:', error);
+    console.error('Plugin registration failed:', error);
     throw error;
   }
 }
@@ -154,7 +169,7 @@ async function registerPlugins() {
  * Start server and register all routes
  */
 async function start() {
-  console.log('\n🚀 Starting server...\n');
+  console.log('\nStarting server...\n');
   
   try {
     await initializeServices();
@@ -165,7 +180,7 @@ async function start() {
       try {
         const dbHealthy = await database.healthCheck().catch(() => false);
         const redisHealthy = redisService.isHealthy();
-        
+
         const response = {
           status: dbHealthy && redisHealthy ? 'healthy' : 'degraded',
           timestamp: new Date().toISOString(),
@@ -174,7 +189,7 @@ async function start() {
             redis: redisHealthy ? 'up' : 'down',
           },
         };
-        
+
         reply.raw.writeHead(200, { 'Content-Type': 'application/json' });
         reply.raw.end(JSON.stringify(response));
         return reply;
@@ -188,6 +203,57 @@ async function start() {
         reply.raw.end(JSON.stringify(errorResponse));
         return reply;
       }
+    });
+
+    fastify.get('/api/health', async (request, reply) => {
+      try {
+        const dbHealthy = await database.healthCheck().catch(() => false);
+        const redisHealthy = redisService.isHealthy();
+
+        const response = {
+          status: dbHealthy && redisHealthy ? 'healthy' : 'degraded',
+          timestamp: new Date().toISOString(),
+          services: {
+            database: dbHealthy ? 'up' : 'down',
+            redis: redisHealthy ? 'up' : 'down',
+          },
+        };
+
+        return reply.status(200).send(response);
+      } catch (error) {
+        const errorResponse = {
+          status: 'unhealthy',
+          timestamp: new Date().toISOString(),
+          services: { database: 'down', redis: 'down' },
+        };
+
+        return reply.status(503).send(errorResponse);
+      }
+    });
+
+    fastify.get('/api/routing-strategies', async () => {
+      return { strategies: ROUTING_STRATEGIES };
+    });
+
+    fastify.post<{ Body: OrderRequest }>('/api/quotes', async (request) => {
+      const body = request.body;
+      validateOrderRequest(body);
+      const strategy: RoutingStrategy = body.routingStrategy || 'BEST_PRICE';
+
+      const quote = await httpDexRouter.getBestQuote(
+        body.tokenIn,
+        body.tokenOut,
+        body.amountIn,
+        strategy,
+      );
+
+      return {
+        tokenIn: body.tokenIn,
+        tokenOut: body.tokenOut,
+        amountIn: body.amountIn,
+        routingStrategy: strategy,
+        quote,
+      };
     });
 
     // ENDPOINT 2: Get All Orders
@@ -263,11 +329,14 @@ async function start() {
         await orderRepository.createOrder(order);
         await redisService.setActiveOrder(order);
 
+        const strategy: RoutingStrategy = body.routingStrategy || 'BEST_PRICE';
+
         return {
           orderId: order.id,
           status: 'pending',
           message: 'Order created. Connect to WebSocket for real-time updates.',
-          websocketUrl: `/api/orders/execute?orderId=${order.id}`,
+          websocketUrl: `/api/orders/execute?orderId=${order.id}&routingStrategy=${strategy}`,
+          routingStrategy: strategy,
         };
       } catch (error) {
         throw error;
@@ -278,10 +347,14 @@ async function start() {
     fastify.register(async function (fastifyInstance) {
       fastifyInstance.get('/api/orders/execute', { websocket: true }, (socket: any, request: any) => {
         const ws = socket;
-        console.log('🔌 WebSocket client connected');
+        console.log('WebSocket client connected');
 
-        const query = (request.query || {}) as { orderId?: string };
+        const query = (request.query || {}) as { orderId?: string; routingStrategy?: RoutingStrategy };
         const orderId = query.orderId;
+        const strategy: RoutingStrategy =
+          query.routingStrategy && ROUTING_STRATEGIES.includes(query.routingStrategy)
+            ? query.routingStrategy
+            : 'BEST_PRICE';
 
         if (!orderId) {
           ws.send(JSON.stringify({
@@ -318,11 +391,11 @@ async function start() {
             }));
 
             orderQueue.registerWebSocket(order.id, ws);
-            await orderQueue.addOrder(order);
+            await orderQueue.addOrder(order, strategy);
 
-            console.log(`📝 Order ${order.id} queued for execution`);
+            console.log(`Order ${order.id} queued for execution`);
           } catch (error) {
-            console.error('❌ WebSocket error:', error);
+            console.error('WebSocket error:', error);
             errorHandler.handleWebSocketError(
               error instanceof Error ? error : new Error(String(error)),
               ws,
@@ -333,12 +406,12 @@ async function start() {
         })();
 
         ws.on('close', () => {
-          console.log(`🔌 WebSocket disconnected for order ${orderId}`);
+          console.log(`WebSocket disconnected for order ${orderId}`);
           orderQueue.unregisterWebSocket(orderId);
         });
 
         ws.on('error', (error: any) => {
-          console.error('❌ WebSocket error:', error);
+          console.error('WebSocket error:', error);
         });
       });
     });
@@ -452,15 +525,15 @@ async function start() {
 
     await fastify.listen({ port, host });
 
-    console.log(`\n✅ Server running at http://localhost:${port}`);
-    console.log(`📡 WebSocket endpoint: ws://localhost:${port}/api/orders/execute`);
-    console.log('\n📋 Available endpoints:');
+    console.log(`\nServer running at http://localhost:${port}`);
+    console.log(`WebSocket endpoint: ws://localhost:${port}/api/orders/execute`);
+    console.log('\nAvailable endpoints:');
     console.log(`   GET  /health`);
     console.log(`   GET  /api/orders`);
     console.log(`   GET  /api/orders/:orderId`);
     console.log(`   WS   /api/orders/execute (WebSocket)\n`);
   } catch (error) {
-    console.error('\n❌ Server startup error:', error);
+    console.error('\nServer startup error:', error);
     process.exit(1);
   }
 }
@@ -469,7 +542,7 @@ async function start() {
  * Graceful shutdown
  */
 async function shutdown(signal: string) {
-  console.log(`\n⏹️  Received ${signal}, shutting down gracefully...`);
+  console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
   try {
     if (orderQueue) {
@@ -490,22 +563,21 @@ async function shutdown(signal: string) {
     console.log('  Closing Fastify server...');
     await fastify.close();
 
-    console.log('✅ Shutdown complete');
-    process.exit(0);
+    console.log('Shutdown complete');
   } catch (error) {
-    console.error('❌ Error during shutdown:', error);
+    console.error('Error during shutdown:', error);
     process.exit(1);
   }
 }
 
 // Global error handlers
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('🚨 Unhandled Promise Rejection:', reason);
+  console.error('Unhandled Promise Rejection:', reason);
   errorHandler.handleUnhandledRejection(reason, promise);
 });
 
 process.on('uncaughtException', (error) => {
-  console.error('🚨 Uncaught Exception:', error);
+  console.error('Uncaught Exception:', error);
   errorHandler.handleUncaughtException(error);
 });
 
@@ -514,8 +586,8 @@ process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
 // Start the application
-console.log('🎬 Calling start() function...');
+console.log('Calling start() function...');
 start().catch((error) => {
-  console.error('🚨 Fatal error during startup:', error);
+  console.error('Fatal error during startup:', error);
   process.exit(1);
 });

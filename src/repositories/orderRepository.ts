@@ -48,7 +48,7 @@ export class OrderRepository {
       executionPrice: row.execution_price ? parseFloat(row.execution_price) : undefined,
       txHash: row.tx_hash,
       retryCount: row.retry_count,
-      errorMessage: row.error_message,
+      errorMessage: row.error_message || undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

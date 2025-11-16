@@ -30,7 +30,15 @@ export class RedisService {
 
   async getActiveOrder(orderId: string): Promise<Order | null> {
     const data = await this.client.get(`order:${orderId}`);
-    return data ? JSON.parse(data) : null;
+    if (!data) return null;
+    
+    const order = JSON.parse(data);
+    // Convert date strings back to Date objects
+    return {
+      ...order,
+      createdAt: new Date(order.createdAt),
+      updatedAt: new Date(order.updatedAt),
+    };
   }
 
   async updateActiveOrder(order: Order): Promise<void> {

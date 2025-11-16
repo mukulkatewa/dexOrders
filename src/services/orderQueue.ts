@@ -2,11 +2,16 @@ import { Queue, Worker } from 'bullmq';
 import { Order } from '../types';
 import { OrderRepository } from '../repositories/orderRepository';
 import { RedisService } from './redisService';
-import { MockDexRouter } from './mockDexRouter';
+import { MockDexRouter, RoutingStrategy } from './mockDexRouter';
+
+interface OrderJobData {
+  order: Order;
+  strategy?: RoutingStrategy;
+}
 
 export class OrderQueue {
-  private queue: Queue;
-  private worker: Worker;
+  private queue: Queue<OrderJobData>;
+  private worker: Worker<OrderJobData>;
   private dexRouter: MockDexRouter;
   private webSockets: Map<string, any> = new Map();
 
@@ -17,11 +22,15 @@ export class OrderQueue {
       password: process.env.REDIS_PASSWORD,
       tls: { rejectUnauthorized: false },
     };
-    this.queue = new Queue('orders', { connection });
+    this.queue = new Queue<OrderJobData>('orders', { connection });
     this.dexRouter = new MockDexRouter();
-    this.worker = new Worker('orders', async (job) => {
-      await this.processOrder(job.data);
-    }, { connection });
+    this.worker = new Worker<OrderJobData>(
+      'orders',
+      async (job) => {
+        await this.processOrder(job.data.order, job.data.strategy);
+      },
+      { connection },
+    );
   }
 
   registerWebSocket(orderId: string, ws: any): void {
@@ -32,11 +41,11 @@ export class OrderQueue {
     this.webSockets.delete(orderId);
   }
 
-  async addOrder(order: Order): Promise<void> {
-    await this.queue.add('process', order);
+  async addOrder(order: Order, strategy: RoutingStrategy = 'BEST_PRICE'): Promise<void> {
+    await this.queue.add('process', { order, strategy });
   }
 
-  private async processOrder(order: Order): Promise<void> {
+  private async processOrder(order: Order, strategy: RoutingStrategy = 'BEST_PRICE'): Promise<void> {
     const ws = this.webSockets.get(order.id);
     try {
       if (ws) {
@@ -48,7 +57,13 @@ export class OrderQueue {
         }));
       }
 
-      const quote = await this.dexRouter.getBestQuote(order.tokenIn, order.tokenOut, order.amountIn);
+      const quote = await this.dexRouter.getBestQuote(order.tokenIn, order.tokenOut, order.amountIn, strategy);
+
+      console.log(
+        `Routing decision for order ${order.id}: strategy=${strategy}, dex=${quote.dex}, ` +
+        `estimatedOutput=${quote.estimatedOutput.toFixed(6)}, price=${quote.price.toFixed(6)}, ` +
+        `slippage=${quote.slippage.toFixed(6)}, liquidity=${quote.liquidity}, latencyMs=${quote.latencyMs}`,
+      );
 
       if (ws) {
         ws.send(JSON.stringify({
@@ -88,6 +103,11 @@ export class OrderQueue {
       });
 
       const result = await this.dexRouter.executeSwap(quote, order.tokenIn, order.tokenOut, order.amountIn);
+
+      console.log(
+        `Swap result for order ${order.id}: dex=${result.dex}, executedPrice=${result.executedPrice.toFixed(6)}, ` +
+        `amountOut=${result.amountOut.toFixed(6)}, txHash=${result.txHash}`,
+      );
 
       await this.orderRepository.updateOrderStatus(order.id, 'confirmed', {
         selectedDex: result.dex,

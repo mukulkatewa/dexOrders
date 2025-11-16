@@ -23,12 +23,19 @@ export interface Order {
   updatedAt: Date;
 }
 
+export type RoutingStrategy =
+  | 'BEST_PRICE'
+  | 'LOWEST_SLIPPAGE'
+  | 'HIGHEST_LIQUIDITY'
+  | 'FASTEST_EXECUTION';
+
 export interface OrderRequest {
   tokenIn: string;
   tokenOut: string;
   amountIn: number;
   orderType?: string;
   slippage?: number;
+  routingStrategy?: RoutingStrategy;
 }
 
 export type DexName = 'raydium' | 'meteora';
