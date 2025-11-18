@@ -1,6 +1,7 @@
 /**
  * ORDER EXECUTION ENGINE - Main Server
  * Fastify + TypeScript + PostgreSQL + Redis + BullMQ
+ * PHASE 3: Added RoutingHub with Intelligent Tuple-Based DEX Selection
  */
 
 import dotenv from 'dotenv';
@@ -8,8 +9,7 @@ import path from 'path';
 
 // Load environment variables first
 const pathqwqw = dotenv.config({ path: path.resolve(__dirname, '../.env') });
-console.log("check check:",pathqwqw);
-
+console.log("check check:", pathqwqw);
 
 console.log('Starting application...');
 console.log('Environment check:');
@@ -34,7 +34,9 @@ import { ArbitrageBot } from './bots/arbitrageBot';
 import { BotConfig } from './bots/autoTradingBot';
 import { MockDexRouter } from './services/mockDexRouter';
 
-
+// PHASE 1, 2 & 3: Import worker, scheduler, and routing hub
+import { DexWorker } from './workers/dexWorker';
+import { JobScheduler } from './services/jobScheduler';
 
 console.log('All imports loaded successfully');
 
@@ -54,6 +56,12 @@ let database: Database;
 let orderRepository: OrderRepository;
 let redisService: RedisService;
 let orderQueue: OrderQueue;
+
+// PHASE 1: Global DEX workers array
+let dexWorkers: DexWorker[] = [];
+
+// PHASE 2 & 3: Global job scheduler (includes RoutingHub)
+let jobScheduler: JobScheduler;
 
 const ROUTING_STRATEGIES: RoutingStrategy[] = [
   'BEST_PRICE',
@@ -132,14 +140,275 @@ async function initializeServices() {
     console.log('  Redis ready');
 
     console.log('  Initializing order queue...');
-    orderQueue = new OrderQueue(orderRepository, redisService);
+    orderQueue = new OrderQueue();
     console.log('  Order queue ready');
+
+    // PHASE 2 & 3: Initialize JobScheduler (includes RoutingHub)
+    console.log('  Initializing job scheduler with routing hub...');
+    jobScheduler = new JobScheduler(orderQueue);
+    console.log('  Job scheduler ready');
+
+    // PHASE 1: Initialize DEX Workers
+    console.log('  Initializing DEX workers...');
+    await initializeDexWorkers();
+    console.log('  DEX workers ready');
+
+    // PHASE 2 & 3: Setup JobScheduler events
+    console.log('  Setting up job scheduler events...');
+    setupJobSchedulerEvents();
+    console.log('  Job scheduler events ready');
 
     console.log('All services initialized successfully');
   } catch (error) {
     console.error('Service initialization failed:', error);
     throw error;
   }
+}
+
+/**
+ * PHASE 1: Initialize DEX Workers
+ * Creates 4 independent workers for parallel DEX processing
+ */
+async function initializeDexWorkers(): Promise<void> {
+  const dexNames: Array<'raydium' | 'meteora' | 'orca' | 'jupiter'> = [
+    'raydium',
+    'meteora',
+    'orca',
+    'jupiter',
+  ];
+
+  console.log('[Workers] Starting DEX workers...');
+
+  for (const dexName of dexNames) {
+    try {
+      const worker = new DexWorker(
+        dexName,
+        orderRepository,
+        redisService,
+        orderQueue.getConnection() // Use shared Redis connection
+      );
+      dexWorkers.push(worker);
+      console.log(`[Workers] ✓ Started ${dexName} worker`);
+    } catch (error) {
+      console.error(`[Workers] ✗ Failed to start ${dexName} worker:`, error);
+      throw error;
+    }
+  }
+
+  // PHASE 1: Setup process event listener for worker status updates
+  setupWorkerEventBridge();
+
+  console.log('[Workers] All DEX workers started successfully');
+}
+
+/**
+ * PHASE 1: Event Bridge - Connect worker events to WebSocket
+ * This is Ani's pattern: Workers emit events, main process broadcasts
+ */
+function setupWorkerEventBridge(): void {
+  console.log('[EventBridge] Setting up process event listener...');
+
+  // Listen for status updates from all workers
+  (process as any).on('orderStatusUpdate', (update: any) => {
+    console.log('[EventBridge] Received status update:', {
+      orderId: update.orderId,
+      status: update.status,
+      dex: update.dex || 'N/A',
+    });
+
+    // Get WebSocket for this order
+    const ws = orderQueue.getWebSocket(update.orderId);
+
+    if (ws && ws.readyState === 1) { // WebSocket.OPEN
+      try {
+        ws.send(JSON.stringify(update));
+        console.log(`[EventBridge] ✓ Broadcasted to order ${update.orderId}`);
+      } catch (error) {
+        console.error(`[EventBridge] ✗ Failed to send to WebSocket:`, error);
+      }
+    } else {
+      console.log(`[EventBridge] No active WebSocket for order ${update.orderId}`);
+    }
+  });
+
+  console.log('[EventBridge] Event bridge active');
+}
+
+/**
+ * PHASE 3: Setup JobScheduler Event Listeners with RoutingHub
+ * Intelligent DEX selection using tuple-based optimization
+ */
+function setupJobSchedulerEvents(): void {
+  console.log('[JobScheduler] Setting up event listeners...');
+
+  // Listen for quote completions from workers
+  (process as any).on('quoteCompleted', (data: any) => {
+    console.log(`[JobScheduler] Quote completed from ${data.dex} for order ${data.orderId}`);
+    jobScheduler.addQuoteResult(data.orderId, data.dex, data.quote);
+  });
+
+  // Listen for quote failures from workers
+  (process as any).on('quoteFailed', (data: any) => {
+    console.warn(`[JobScheduler] Quote failed from ${data.dex} for order ${data.orderId}: ${data.error}`);
+    jobScheduler.addQuoteFailure(data.orderId, data.dex, data.error);
+  });
+
+  // PHASE 3: Enhanced quotes collected handler with RoutingHub
+  (process as any).on('quotesCollected', async (data: any) => {
+    console.log(`[JobScheduler] All quotes collected for order ${data.orderId}:`, {
+      validQuotes: data.validQuotes,
+      totalReceived: data.totalReceived,
+      strategy: data.strategy,
+    });
+
+    const ws = orderQueue.getWebSocket(data.orderId);
+
+    // Broadcast quotes summary to WebSocket
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({
+        orderId: data.orderId,
+        status: 'quotes_collected',
+        message: `Received ${data.validQuotes} quotes from DEXs`,
+        quotes: data.quotes.map((q: any) => ({
+          dex: q.provider || q.dex,
+          price: q.price,
+          estimatedOutput: q.estimatedOutput || q.outputAmount,
+          slippage: q.slippage,
+          liquidity: q.liquidity,
+        })),
+        timestamp: new Date().toISOString(),
+      }));
+    }
+
+    // PHASE 3: Use RoutingHub for intelligent DEX selection
+    if (data.quotes.length > 0) {
+      try {
+        // Get order details
+        const order = await orderRepository.getOrderById(data.orderId);
+        if (!order) {
+          throw new Error('Order not found');
+        }
+
+        const strategy: RoutingStrategy = data.strategy || 'BEST_PRICE';
+
+        // PHASE 3: Get RoutingHub and perform intelligent selection
+        const routingHub = jobScheduler.getRoutingHub();
+        
+        // Validate quotes first
+        const validation = routingHub.validateQuotes(data.quotes);
+        
+        if (!validation.valid) {
+          throw new Error(`Quote validation failed: ${validation.errors.join(', ')}`);
+        }
+
+        // Emit warnings if any
+        if (validation.warnings.length > 0 && ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({
+            orderId: data.orderId,
+            status: 'routing_warnings',
+            warnings: validation.warnings,
+            timestamp: new Date().toISOString(),
+          }));
+        }
+
+        // Get full routing analysis
+        const analysis = data.routingAnalysis || routingHub.getRoutingAnalysis(data.quotes);
+
+        // Select best route based on strategy
+        const selectedRoute = routingHub.selectBestRoute(data.quotes, strategy);
+
+        console.log(`[RoutingHub] Selected ${selectedRoute.provider} using ${strategy}:`, {
+          outputAmount: selectedRoute.outputAmount,
+          slippage: selectedRoute.slippage,
+          liquidity: selectedRoute.liquidity,
+          price: selectedRoute.price,
+        });
+
+        // PHASE 3: Broadcast detailed selection with market analysis
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({
+            orderId: data.orderId,
+            status: 'dex_selected',
+            message: `Selected ${selectedRoute.provider} for execution using ${strategy} strategy`,
+            selectedRoute: {
+              dex: selectedRoute.provider,
+              estimatedOutput: selectedRoute.outputAmount,
+              slippage: selectedRoute.slippage,
+              liquidity: selectedRoute.liquidity,
+              price: selectedRoute.price,
+            },
+            strategy,
+            // PHASE 3: Include market metrics for transparency
+            marketMetrics: {
+              priceSpread: analysis.marketMetrics.priceSpread,
+              priceSpreadPercentage: analysis.marketMetrics.priceSpreadPercentage,
+              averagePrice: analysis.marketMetrics.averagePrice,
+              bestOutputAmount: analysis.marketMetrics.bestOutputAmount,
+              worstOutputAmount: analysis.marketMetrics.worstOutputAmount,
+              averageSlippage: analysis.marketMetrics.averageSlippage,
+              totalLiquidity: analysis.marketMetrics.totalLiquidity,
+            },
+            // PHASE 3: Show alternative routes for each strategy
+            alternativeRoutes: {
+              BEST_PRICE: analysis.strategyAnalysis.BEST_PRICE ? {
+                dex: analysis.strategyAnalysis.BEST_PRICE.provider,
+                outputAmount: analysis.strategyAnalysis.BEST_PRICE.outputAmount,
+              } : null,
+              LOWEST_SLIPPAGE: analysis.strategyAnalysis.LOWEST_SLIPPAGE ? {
+                dex: analysis.strategyAnalysis.LOWEST_SLIPPAGE.provider,
+                slippage: analysis.strategyAnalysis.LOWEST_SLIPPAGE.slippage,
+              } : null,
+              HIGHEST_LIQUIDITY: analysis.strategyAnalysis.HIGHEST_LIQUIDITY ? {
+                dex: analysis.strategyAnalysis.HIGHEST_LIQUIDITY.provider,
+                liquidity: analysis.strategyAnalysis.HIGHEST_LIQUIDITY.liquidity,
+              } : null,
+              FASTEST_EXECUTION: analysis.strategyAnalysis.FASTEST_EXECUTION ? {
+                dex: analysis.strategyAnalysis.FASTEST_EXECUTION.provider,
+              } : null,
+            },
+            timestamp: new Date().toISOString(),
+          }));
+        }
+
+        // Trigger swap job on selected DEX
+        await orderQueue.addSwapJob(
+          selectedRoute.provider as any,
+          data.orderId,
+          order.tokenIn,
+          order.tokenOut,
+          order.amountIn
+        );
+
+        console.log(`[JobScheduler] Swap job added for ${selectedRoute.provider}`);
+      } catch (error) {
+        console.error('[JobScheduler] Failed to process quotes with RoutingHub:', error);
+        
+        // Notify via WebSocket
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({
+            orderId: data.orderId,
+            status: 'error',
+            message: 'Failed to select route and execute swap',
+            error: error instanceof Error ? error.message : String(error),
+            timestamp: new Date().toISOString(),
+          }));
+        }
+      }
+    } else {
+      console.error(`[JobScheduler] No valid quotes for order ${data.orderId}`);
+      
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({
+          orderId: data.orderId,
+          status: 'failed',
+          message: 'No valid quotes received from any DEX',
+          timestamp: new Date().toISOString(),
+        }));
+      }
+    }
+  });
+
+  console.log('[JobScheduler] Event listeners ready');
 }
 
 /**
@@ -180,6 +449,7 @@ async function start() {
       try {
         const dbHealthy = await database.healthCheck().catch(() => false);
         const redisHealthy = redisService.isHealthy();
+        const jobSchedulerStats = jobScheduler ? jobScheduler.getStatistics() : null;
 
         const response = {
           status: dbHealthy && redisHealthy ? 'healthy' : 'degraded',
@@ -187,7 +457,12 @@ async function start() {
           services: {
             database: dbHealthy ? 'up' : 'down',
             redis: redisHealthy ? 'up' : 'down',
+            workers: dexWorkers.length === 4 ? 'up' : 'degraded',
+            jobScheduler: jobScheduler ? 'up' : 'down',
+            routingHub: jobScheduler ? 'up' : 'down', // PHASE 3: Added
           },
+          // PHASE 3: Add scheduler statistics
+          statistics: jobSchedulerStats || null,
         };
 
         reply.raw.writeHead(200, { 'Content-Type': 'application/json' });
@@ -197,7 +472,7 @@ async function start() {
         const errorResponse = {
           status: 'unhealthy',
           timestamp: new Date().toISOString(),
-          services: { database: 'down', redis: 'down' },
+          services: { database: 'down', redis: 'down', workers: 'down', jobScheduler: 'down', routingHub: 'down' },
         };
         reply.raw.writeHead(503, { 'Content-Type': 'application/json' });
         reply.raw.end(JSON.stringify(errorResponse));
@@ -209,6 +484,7 @@ async function start() {
       try {
         const dbHealthy = await database.healthCheck().catch(() => false);
         const redisHealthy = redisService.isHealthy();
+        const jobSchedulerStats = jobScheduler ? jobScheduler.getStatistics() : null;
 
         const response = {
           status: dbHealthy && redisHealthy ? 'healthy' : 'degraded',
@@ -216,7 +492,11 @@ async function start() {
           services: {
             database: dbHealthy ? 'up' : 'down',
             redis: redisHealthy ? 'up' : 'down',
+            workers: dexWorkers.length === 4 ? 'up' : 'degraded',
+            jobScheduler: jobScheduler ? 'up' : 'down',
+            routingHub: jobScheduler ? 'up' : 'down', // PHASE 3: Added
           },
+          statistics: jobSchedulerStats || null,
         };
 
         return reply.status(200).send(response);
@@ -224,15 +504,27 @@ async function start() {
         const errorResponse = {
           status: 'unhealthy',
           timestamp: new Date().toISOString(),
-          services: { database: 'down', redis: 'down' },
+          services: { database: 'down', redis: 'down', workers: 'down', jobScheduler: 'down', routingHub: 'down' },
         };
 
         return reply.status(503).send(errorResponse);
       }
     });
 
+    // PHASE 3: Enhanced routing strategies endpoint
     fastify.get('/api/routing-strategies', async () => {
-      return { strategies: ROUTING_STRATEGIES };
+      const strategies = jobScheduler ? jobScheduler.getAvailableStrategies() : {
+        strategies: ROUTING_STRATEGIES,
+        default: 'BEST_PRICE' as RoutingStrategy,
+        descriptions: {
+          BEST_PRICE: 'Selects DEX with highest output amount',
+          LOWEST_SLIPPAGE: 'Selects DEX with lowest price impact',
+          HIGHEST_LIQUIDITY: 'Selects DEX with highest pool liquidity',
+          FASTEST_EXECUTION: 'Selects fastest DEX for execution',
+        },
+      };
+      
+      return strategies;
     });
 
     fastify.post<{ Body: OrderRequest }>('/api/quotes', async (request) => {
@@ -331,23 +623,37 @@ async function start() {
 
         const strategy: RoutingStrategy = body.routingStrategy || 'BEST_PRICE';
 
+         if (body.autoExecute !== false) {  // Default to true
+      console.log(`[API] Auto-triggering quote processing for order ${order.id}`);
+      
+      // Store strategy in order
+      (order as any).strategy = strategy;
+      
+      // Trigger parallel quote processing
+      await jobScheduler.addCompareQuotesJob(order, strategy);
+      
+      console.log(`[API] Quote processing started for order ${order.id}`);
+    }
+
+
         return {
           orderId: order.id,
           status: 'pending',
           message: 'Order created. Connect to WebSocket for real-time updates.',
           websocketUrl: `/api/orders/execute?orderId=${order.id}&routingStrategy=${strategy}`,
           routingStrategy: strategy,
+          autoExecuted: body.autoExecute !== false,
         };
       } catch (error) {
         throw error;
       }
     });
 
-    // ENDPOINT 5: WebSocket for Order Execution - client connects with orderId
+    // ENDPOINT 5: WebSocket for Order Execution
     fastify.register(async function (fastifyInstance) {
       fastifyInstance.get('/api/orders/execute', { websocket: true }, (socket: any, request: any) => {
         const ws = socket;
-        console.log('WebSocket client connected');
+        console.log('[WebSocket] Client connected');
 
         const query = (request.query || {}) as { orderId?: string; routingStrategy?: RoutingStrategy };
         const orderId = query.orderId;
@@ -387,15 +693,21 @@ async function start() {
               orderId: order.id,
               status: 'pending',
               message: 'Order received and queued for execution',
+              strategy,
               timestamp: Date.now(),
             }));
 
+            // Register WebSocket for event bridge
             orderQueue.registerWebSocket(order.id, ws);
-            await orderQueue.addOrder(order, strategy);
+            
+            // PHASE 3: Trigger parallel quote processing with strategy
+            console.log(`[WebSocket] Triggering parallel quote fetching for order ${order.id} with strategy ${strategy}`);
+            (order as any).strategy = strategy;
+            await jobScheduler.addCompareQuotesJob(order, strategy);
 
-            console.log(`Order ${order.id} queued for execution`);
+            console.log(`[WebSocket] Order ${order.id} queued for parallel execution with ${strategy} routing`);
           } catch (error) {
-            console.error('WebSocket error:', error);
+            console.error('[WebSocket] Error:', error);
             errorHandler.handleWebSocketError(
               error instanceof Error ? error : new Error(String(error)),
               ws,
@@ -406,33 +718,29 @@ async function start() {
         })();
 
         ws.on('close', () => {
-          console.log(`WebSocket disconnected for order ${orderId}`);
+          console.log(`[WebSocket] Disconnected for order ${orderId}`);
           orderQueue.unregisterWebSocket(orderId);
         });
 
         ws.on('error', (error: any) => {
-          console.error('WebSocket error:', error);
+          console.error('[WebSocket] Error:', error);
         });
       });
     });
 
-    // --- NEW BOT API ENDPOINTS ---
-
-    // POST /api/bots/start - Start an Auto-Trading Bot with config
+    // --- BOT API ENDPOINTS ---
     interface BotStartRequest {
-  tokenIn: string;
-  tokenOut: string;
-  amountIn: number;
-  triggerCondition: 'below' | 'above';
-  targetPrice: number;
-}
+      tokenIn: string;
+      tokenOut: string;
+      amountIn: number;
+      triggerCondition: 'below' | 'above';
+      targetPrice: number;
+    }
+
     fastify.post<{ Body: BotStartRequest }>('/api/bots/start', async (request, reply) => {
       try {
-        console.log('Registering bot API routes...');
-
         const { tokenIn, tokenOut, amountIn, triggerCondition, targetPrice } = request.body;
 
-        // Basic validation
         if (!tokenIn || !tokenOut || !amountIn || !triggerCondition || !targetPrice) {
           return reply.status(400).send({ error: 'Missing required bot config parameters' });
         }
@@ -455,7 +763,6 @@ async function start() {
       }
     });
 
-    // POST /api/bots/stop - Stop an Auto-Trading Bot by botId
     fastify.post<{ Body: { botId: string } }>('/api/bots/stop', async (request, reply) => {
       try {
         const { botId } = request.body;
@@ -473,7 +780,6 @@ async function start() {
       }
     });
 
-    // GET /api/bots/active - List count of currently active Auto-Trading Bots
     fastify.get('/api/bots/active', async (_request, reply) => {
       try {
         const count = botManager.getActiveBotsCount();
@@ -484,8 +790,6 @@ async function start() {
       }
     });
 
-    // GET /api/arbitrage/check?tokenIn=&tokenOut=&amount=
-    // Check arbitrage price difference between Raydium and Meteora
     fastify.get<{ Querystring: { tokenIn: string; tokenOut: string; amount: string } }>(
       '/api/arbitrage/check',
       async (request, reply) => {
@@ -525,13 +829,20 @@ async function start() {
 
     await fastify.listen({ port, host });
 
-    console.log(`\nServer running at http://localhost:${port}`);
-    console.log(`WebSocket endpoint: ws://localhost:${port}/api/orders/execute`);
+    console.log(`\n✓ Server running at http://localhost:${port}`);
+    console.log(`✓ WebSocket endpoint: ws://localhost:${port}/api/orders/execute`);
+    console.log(`✓ DEX Workers: ${dexWorkers.length}/4 active`);
+    console.log(`✓ JobScheduler: ${jobScheduler ? 'active' : 'inactive'}`);
+    console.log(`✓ RoutingHub: ${jobScheduler ? 'active with 4 strategies' : 'inactive'}`);
     console.log('\nAvailable endpoints:');
     console.log(`   GET  /health`);
+    console.log(`   GET  /api/health`);
+    console.log(`   GET  /api/routing-strategies`);
     console.log(`   GET  /api/orders`);
     console.log(`   GET  /api/orders/:orderId`);
-    console.log(`   WS   /api/orders/execute (WebSocket)\n`);
+    console.log(`   POST /api/orders/execute`);
+    console.log(`   POST /api/quotes`);
+    console.log(`   WS   /api/orders/execute\n`);
   } catch (error) {
     console.error('\nServer startup error:', error);
     process.exit(1);
@@ -540,11 +851,28 @@ async function start() {
 
 /**
  * Graceful shutdown
+ * PHASE 3: Complete cleanup
  */
 async function shutdown(signal: string) {
   console.log(`\nReceived ${signal}, shutting down gracefully...`);
 
   try {
+    // PHASE 2 & 3: Cleanup job scheduler and routing hub
+    if (jobScheduler) {
+      console.log('  Cleaning up job scheduler and routing hub...');
+      jobScheduler.cleanup();
+      console.log('  ✓ Job scheduler and routing hub cleaned up');
+    }
+
+    // PHASE 1: Close all DEX workers
+    if (dexWorkers && dexWorkers.length > 0) {
+      console.log('  Closing DEX workers...');
+      for (const worker of dexWorkers) {
+        await worker.close();
+      }
+      console.log('  ✓ All workers closed');
+    }
+
     if (orderQueue) {
       console.log('  Closing order queue...');
       await orderQueue.close();
@@ -563,7 +891,8 @@ async function shutdown(signal: string) {
     console.log('  Closing Fastify server...');
     await fastify.close();
 
-    console.log('Shutdown complete');
+    console.log('✓ Shutdown complete');
+    process.exit(0);
   } catch (error) {
     console.error('Error during shutdown:', error);
     process.exit(1);

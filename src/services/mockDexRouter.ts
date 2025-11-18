@@ -1,3 +1,6 @@
+// src/services/mockDexRouter.ts
+// PHASE 2: Added individual DEX quote methods for parallel worker processing
+
 export interface DexQuote {
   dex: string;
   price: number;
@@ -21,6 +24,10 @@ export type RoutingStrategy =
   | 'HIGHEST_LIQUIDITY'
   | 'FASTEST_EXECUTION';
 
+/**
+ * MockDexRouter simulates DEX interactions
+ * PHASE 2: Added individual DEX methods for targeted quote fetching
+ */
 export class MockDexRouter {
   constructor(
     private quoteDelayMs: number = 0,
@@ -32,6 +39,14 @@ export class MockDexRouter {
     await new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  /**
+   * Generate realistic quote for a specific DEX
+   * Each DEX has unique characteristics:
+   * - Raydium: Baseline, medium latency
+   * - Meteora: Slightly worse price, slower
+   * - Orca: Best price, slowest
+   * - Jupiter: Aggregator, fastest
+   */
   private generateQuote(dex: string, amount: number): DexQuote {
     const basePrice = 0.05;
     const dexSpread =
@@ -56,6 +71,71 @@ export class MockDexRouter {
     return { dex, price, fee, estimatedOutput, slippage, liquidity, latencyMs };
   }
 
+  /**
+   * PHASE 2: Individual DEX Quote Methods
+   * These allow workers to fetch from specific DEXs in parallel
+   */
+
+  /**
+   * Get quote specifically from Raydium
+   * Used by Raydium worker for targeted quote fetching
+   */
+  async getRaydiumQuote(
+    tokenIn: string,
+    tokenOut: string,
+    amount: number
+  ): Promise<DexQuote> {
+    await this.delay(this.quoteDelayMs);
+    console.log(`[MockDexRouter] Fetching Raydium quote for ${tokenIn}/${tokenOut}`);
+    return this.generateQuote('raydium', amount);
+  }
+
+  /**
+   * Get quote specifically from Meteora
+   * Used by Meteora worker for targeted quote fetching
+   */
+  async getMeteorQuote(
+    tokenIn: string,
+    tokenOut: string,
+    amount: number
+  ): Promise<DexQuote> {
+    await this.delay(this.quoteDelayMs);
+    console.log(`[MockDexRouter] Fetching Meteora quote for ${tokenIn}/${tokenOut}`);
+    return this.generateQuote('meteora', amount);
+  }
+
+  /**
+   * Get quote specifically from Orca
+   * Used by Orca worker for targeted quote fetching
+   */
+  async getOrcaQuote(
+    tokenIn: string,
+    tokenOut: string,
+    amount: number
+  ): Promise<DexQuote> {
+    await this.delay(this.quoteDelayMs);
+    console.log(`[MockDexRouter] Fetching Orca quote for ${tokenIn}/${tokenOut}`);
+    return this.generateQuote('orca', amount);
+  }
+
+  /**
+   * Get quote specifically from Jupiter
+   * Used by Jupiter worker for targeted quote fetching
+   */
+  async getJupiterQuote(
+    tokenIn: string,
+    tokenOut: string,
+    amount: number
+  ): Promise<DexQuote> {
+    await this.delay(this.quoteDelayMs);
+    console.log(`[MockDexRouter] Fetching Jupiter quote for ${tokenIn}/${tokenOut}`);
+    return this.generateQuote('jupiter', amount);
+  }
+
+  /**
+   * Get quotes from all DEXs (original method - kept for backward compatibility)
+   * This is now less efficient than using individual methods in parallel
+   */
   async getQuotes(tokenIn: string, tokenOut: string, amount: number): Promise<DexQuote[]> {
     await this.delay(this.quoteDelayMs);
     return [
@@ -66,6 +146,9 @@ export class MockDexRouter {
     ];
   }
 
+  /**
+   * Select best quote based on routing strategy
+   */
   private selectBest(quotes: DexQuote[], strategy: RoutingStrategy): DexQuote {
     if (quotes.length === 0) {
       throw new Error('No quotes available');
@@ -85,6 +168,11 @@ export class MockDexRouter {
     }
   }
 
+  /**
+   * Get best quote using routing strategy
+   * This method is kept for HTTP API endpoints
+   * Workers should use individual DEX methods for parallel processing
+   */
   async getBestQuote(
     tokenIn: string,
     tokenOut: string,
@@ -95,6 +183,17 @@ export class MockDexRouter {
     return this.selectBest(quotes, strategy);
   }
 
+  /**
+   * PHASE 2: Get best quote from specific set of quotes
+   * Used by JobScheduler after parallel quote collection
+   */
+  selectBestFromQuotes(quotes: DexQuote[], strategy: RoutingStrategy): DexQuote {
+    return this.selectBest(quotes, strategy);
+  }
+
+  /**
+   * Execute swap on selected DEX
+   */
   async executeSwap(
     quote: DexQuote,
     _tokenIn: string,
@@ -102,13 +201,67 @@ export class MockDexRouter {
     _amount: number,
   ): Promise<SwapResult> {
     await this.delay(this.swapDelayMs);
+    
+    console.log(`[MockDexRouter] Executing swap on ${quote.dex}`);
+    
+    // Generate realistic transaction hash
     const txHash =
       '5' + Array.from({ length: 87 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+    
     return {
       txHash,
       executedPrice: quote.price,
       amountOut: quote.estimatedOutput,
       dex: quote.dex,
     };
+  }
+
+  /**
+   * PHASE 2: Execute swap on specific DEX
+   * Allows workers to execute on their designated DEX
+   */
+  async executeSwapOnDex(
+    dex: string,
+    tokenIn: string,
+    tokenOut: string,
+    amount: number,
+  ): Promise<SwapResult> {
+    console.log(`[MockDexRouter] Executing swap on ${dex} for ${tokenIn}/${tokenOut}`);
+    
+    // Get quote from specific DEX
+    let quote: DexQuote;
+    switch (dex) {
+      case 'raydium':
+        quote = await this.getRaydiumQuote(tokenIn, tokenOut, amount);
+        break;
+      case 'meteora':
+        quote = await this.getMeteorQuote(tokenIn, tokenOut, amount);
+        break;
+      case 'orca':
+        quote = await this.getOrcaQuote(tokenIn, tokenOut, amount);
+        break;
+      case 'jupiter':
+        quote = await this.getJupiterQuote(tokenIn, tokenOut, amount);
+        break;
+      default:
+        throw new Error(`Unknown DEX: ${dex}`);
+    }
+
+    // Execute swap
+    return await this.executeSwap(quote, tokenIn, tokenOut, amount);
+  }
+
+  /**
+   * Validate if DEX name is supported
+   */
+  isSupportedDex(dex: string): boolean {
+    return ['raydium', 'meteora', 'orca', 'jupiter'].includes(dex.toLowerCase());
+  }
+
+  /**
+   * Get all supported DEX names
+   */
+  getSupportedDexes(): string[] {
+    return ['raydium', 'meteora', 'orca', 'jupiter'];
   }
 }
