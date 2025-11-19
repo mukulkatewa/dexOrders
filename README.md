@@ -1,297 +1,457 @@
-# Order Execution Engine
+🚀 Order Execution Engine - Solana DEX Aggregator
+A high-performance order execution engine that routes trades across multiple Solana DEXs using parallel worker architecture and intelligent routing strategies.
 
-## Overview
+📋 Table of Contents
+Overview
 
-This project implements the assignment “order execution engine with DEX routing and WebSocket status updates” using Node.js, TypeScript, Fastify, BullMQ, Redis, and PostgreSQL. The system focuses on a single order type (market orders) and uses a mock DEX router that simulates Raydium and Meteora (plus a couple of extra DEXes) with realistic pricing, liquidity, and latency.
+Features
 
-Key goals:
+Architecture
 
-- One order type (market) with clear extension points for limit and sniper orders.
-- HTTP → WebSocket flow for live status streaming per order.
-- Multi‑DEX routing with price, slippage, liquidity, and latency metrics.
-- Queue‑based concurrent processing with logging and tests.
+Tech Stack
 
-## Features
+Prerequisites
 
-### Core Features
+Installation
 
-- **Market order execution** with real‑time WebSocket status updates.
-- **DEX routing** across Raydium, Meteora, and additional mocked DEXs (Orca, Jupiter).
-- **Routing strategies**: best price, lowest slippage, highest liquidity, fastest execution.
-- **Order persistence** in PostgreSQL with Redis for active orders.
-- **Queue management** using BullMQ for reliable background processing.
-- **Health monitoring** via HTTP health endpoints.
+Configuration
 
-### Additional Features (Bots)
+Running the Application
 
-- **Auto‑trading bot** that monitors prices and executes trades when conditions are met.
-- **Arbitrage bot** that detects price differences between DEXs.
+API Documentation
 
-## Architecture
+Routing Strategies
 
-High‑level flow:
+Testing
 
-1. Client sends `POST /api/orders/execute` to create an order.
-2. API validates input and writes the order to PostgreSQL and Redis.
-3. Response returns `orderId` and a WebSocket URL.
-4. Client opens a WebSocket to `/api/orders/execute?orderId=...`.
-5. The server pushes status updates (`pending → routing → building → submitted → confirmed/failed`) over WebSocket.
-6. In the background, the order is enqueued in BullMQ and processed by a worker that uses `MockDexRouter` to pick the best DEX and simulate execution.
+Project Structure
 
-Data flow:
+Phase Implementation
 
-> Client → Fastify API → Redis + PostgreSQL → BullMQ queue → Worker → Mock DEX Router → PostgreSQL/Redis → WebSocket back to client
+WebSocket Integration
 
-### Tech Stack
+Troubleshooting
 
-- **Backend framework:** Fastify
-- **Language:** TypeScript
-- **Database:** PostgreSQL (e.g. Neon)
-- **Cache / active orders:** Redis (e.g. Upstash)
-- **Queue:** BullMQ + Redis
-- **WebSocket:** `@fastify/websocket`
+Performance
 
-## Order Type Choice
+🎯 Overview
+The Order Execution Engine is a sophisticated trading system that:
 
-### Chosen Order Type: Market Orders
+Routes orders across 4 major Solana DEXs (Raydium, Meteora, Orca, Jupiter)
 
-This engine processes **market orders only**. Market orders are a good fit because they prioritize immediate execution at the best available price, which keeps the routing logic and tests focused on DEX price discovery instead of complex order book semantics.
+Uses parallel worker architecture for optimal performance
 
-**Extension to other order types (limit / sniper):**
+Implements mathematical tuple-based route optimization
 
-- Limit orders can be supported by adding price checks in the worker (e.g. only execute if the current best quote satisfies the limit price, otherwise keep the order pending or canceled).
-- Sniper orders can be implemented by adding a monitoring component that watches for new token launches or specific price events and then reuses the same execution pipeline once the trigger condition is met.
+Provides real-time WebSocket updates
 
-## Getting Started
+Supports multiple routing strategies based on user preferences
 
-### Prerequisites
-- Node.js 18+ and npm
-- PostgreSQL database (Neon recommended)
-- Redis instance (Upstash recommended)
+Supported DEXs
+DEX	Type	Technology	Speed Rank
+Raydium	AMM	Standard Automated Market Maker	1
+Meteora	DLMM	Dynamic Liquidity Market Maker	3
+Orca	Whirlpool	Concentrated Liquidity	2
+Jupiter	Aggregator	Multi-DEX Routing	4 (Fastest)
+✨ Features
+Core Features
+✅ Parallel Quote Fetching - Queries all DEXs simultaneously
 
-### Installation
+✅ Intelligent Route Selection - Mathematical optimization for best execution
 
-1. **Clone the repository**
+✅ Multiple Routing Strategies - BEST_PRICE, LOWEST_SLIPPAGE, HIGHEST_LIQUIDITY, FASTEST_EXECUTION
+
+✅ Real-Time Updates - WebSocket streaming of order status
+
+✅ Persistent Storage - PostgreSQL for order history
+
+✅ Fast Caching - Redis for active orders
+
+✅ Queue Management - BullMQ for reliable job processing
+
+Advanced Features
+🎯 Tuple-Based Optimization - Mathematical representation: qi = (Pi, Oi, Si, Li, Di)
+
+📊 Market Analysis - Price spread, liquidity metrics, slippage analysis
+
+🔄 Alternative Routes - Shows what other strategies would select
+
+⚡ High Performance - Sub-10 second order execution
+
+🛡️ Error Handling - Comprehensive error classification and recovery
+
+🏗️ Architecture
+System Design
+text
+┌─────────────┐
+│   Client    │
+└──────┬──────┘
+       │ HTTP/WebSocket
+       ▼
+┌─────────────────────────────────────┐
+│         Fastify Server              │
+│  ┌─────────────────────────────┐   │
+│  │      RoutingHub             │   │
+│  │  (Mathematical Selection)   │   │
+│  └─────────────────────────────┘   │
+└──────────┬──────────────────────────┘
+           │
+           ▼
+    ┌──────────────┐
+    │   BullMQ     │
+    │  (Redis)     │
+    └──────┬───────┘
+           │
+    ┌──────┴───────────────────┐
+    │                          │
+    ▼                          ▼
+┌─────────┐              ┌─────────┐
+│ Worker  │              │ Worker  │
+│ Pool    │   ...  x4    │ Pool    │
+│(Raydium)│              │(Jupiter)│
+└────┬────┘              └────┬────┘
+     │                        │
+     ▼                        ▼
+┌─────────────────────────────────┐
+│      MockDexRouter              │
+│  (DEX Quote & Swap Execution)   │
+└─────────────────────────────────┘
+Data Flow
+Order Received (HTTP POST)
+
+Stored in PostgreSQL + Redis
+
+4 Quote Jobs Added to BullMQ (Parallel)
+
+Workers Fetch Quotes Simultaneously
+
+RoutingHub Analyzes All Quotes
+
+Best DEX Selected (Strategy-Based)
+
+Swap Job Triggered on Selected DEX
+
+Transaction Executed & Confirmed
+
+Order Status Updated (WebSocket + DB)
+
+🛠️ Tech Stack
+Backend
+Runtime: Node.js 18+ with TypeScript
+
+Framework: Fastify (High-performance web framework)
+
+Queue: BullMQ + Redis (Job processing)
+
+Database: PostgreSQL 14+ (Order persistence)
+
+Caching: Redis (Active order cache)
+
+WebSocket: @fastify/websocket (Real-time updates)
+
+Key Dependencies
+fastify: ^4.x
+
+bullmq: ^5.x
+
+ioredis: ^5.x
+
+pg: ^8.x
+
+typescript: ^5.x
+
+dotenv: ^16.x
+
+📦 Prerequisites
+Required Software
+Node.js 18.x or higher
+
+PostgreSQL 14.x or higher
+
+Redis 7.x or higher
+
+npm or yarn
+
+Installation Commands
+Ubuntu/Debian:
+
+bash
+sudo apt update
+sudo apt install postgresql-14 redis-server nodejs npm
+macOS (using Homebrew):
+
+bash
+brew install postgresql@14 redis node
+Verify installations:
+
+bash
+node --version    # Should be >= 18.x
+psql --version    # Should be >= 14.x
+redis-cli --version
+🚀 Installation
+1. Clone Repository
+bash
 git clone <your-repo-url>
-cd order-execution-engine
-
-2. **Install dependencies**
+cd order-execution-engine-final
+2. Install Dependencies
+bash
 npm install
+3. Setup Database
+bash
+# Start PostgreSQL
+sudo service postgresql start  # Linux
+brew services start postgresql@14  # macOS
 
-3. **Set up environment variables**
+# Create database
+psql -U postgres
+CREATE DATABASE order_execution_db;
+\q
 
-Create a `.env` file in the root directory:
+# Run migrations
+psql -U postgres -d order_execution_db -f src/database/schema.sql
+4. Setup Redis
+bash
+# Start Redis
+sudo service redis-server start  # Linux
+brew services start redis  # macOS
 
-Server Configuration
-PORT=3000
+# Verify Redis is running
+redis-cli ping  # Should return "PONG"
+5. Environment Configuration
+Create .env file:
+
+bash
+cp .env.example .env
+Edit .env with your configuration:
+
+text
 NODE_ENV=development
+PORT=3000
 HOST=0.0.0.0
 
-PostgreSQL (Neon) Configuration
-DATABASE_URL=postgresql://user:password@host/dbname?sslmode=require
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=your_password
+DB_NAME=order_execution_db
 
-Redis (Upstash) Configuration
-REDIS_HOST=your-redis-host.upstash.io
+REDIS_HOST=localhost
 REDIS_PORT=6379
-REDIS_PASSWORD=your-redis-password
+REDIS_PASSWORD=
 
-BullMQ Configuration
-BULLMQ_REDIS_HOST=your-redis-host.upstash.io
-BULLMQ_REDIS_PORT=6379
-BULLMQ_REDIS_PASSWORD=your-redis-password
-
-Order Processing Configuration
-MAX_CONCURRENT_ORDERS=10
-MAX_ORDERS_PER_MINUTE=100
 MAX_RETRY_ATTEMPTS=3
-
-4. **Set up database**
-
-Run the following SQL in your PostgreSQL (Neon) SQL Editor:
-
--- Create orders table
-CREATE TABLE IF NOT EXISTS orders (
-id UUID PRIMARY KEY,
-token_in VARCHAR(50) NOT NULL,
-token_out VARCHAR(50) NOT NULL,
-amount_in DECIMAL(20, 8) NOT NULL,
-amount_out DECIMAL(20, 8),
-order_type VARCHAR(20) NOT NULL,
-status VARCHAR(20) NOT NULL,
-selected_dex VARCHAR(20),
-execution_price DECIMAL(20, 8),
-tx_hash VARCHAR(100),
-error_message TEXT,
-retry_count INTEGER DEFAULT 0,
-created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create bot_configs table (for bot features)
-CREATE TABLE IF NOT EXISTS bot_configs (
-id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-user_id VARCHAR(255) NOT NULL,
-token_in VARCHAR(10) NOT NULL,
-token_out VARCHAR(10) NOT NULL,
-amount_in DECIMAL NOT NULL,
-trigger_condition VARCHAR(10) NOT NULL,
-target_price DECIMAL NOT NULL,
-is_active BOOLEAN DEFAULT true,
-created_at TIMESTAMP DEFAULT NOW(),
-updated_at TIMESTAMP DEFAULT NOW()
-);
-
--- Create indexes
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_orders_token_pair ON orders(token_in, token_out);
-
-
-5. **Start the server**
-
-Development mode with auto-reload
+WORKER_CONCURRENCY=5
+🎮 Running the Application
+Development Mode
+bash
 npm run dev
+Production Mode
+bash
+# Build TypeScript
+npm run build
 
-Production mode
+# Start server
 npm start
+Server will start at: http://localhost:3000
 
+📡 API Documentation
+Base URL
+text
+http://localhost:3000
+1. Health Check
+Request:
 
-## API Endpoints
+bash
+GET /api/health
+Response:
 
-### Core HTTP and WebSocket Routes
+json
+{
+  "status": "healthy",
+  "timestamp": "2025-11-19T18:00:00.000Z",
+  "services": {
+    "database": "up",
+    "redis": "up",
+    "workers": "up",
+    "routingHub": "up"
+  }
+}
+2. Get Routing Strategies
+Request:
 
-#### Health
+bash
+GET /api/routing-strategies
+Response:
 
-- `GET /health`
-  - Basic health check for database and Redis connectivity.
-- `GET /api/health`
-  - Assignment‑style health endpoint returning structured status and timestamps.
+json
+{
+  "strategies": ["BEST_PRICE", "LOWEST_SLIPPAGE", "HIGHEST_LIQUIDITY", "FASTEST_EXECUTION"],
+  "default": "BEST_PRICE",
+  "descriptions": {
+    "BEST_PRICE": "Selects DEX with highest output amount",
+    "LOWEST_SLIPPAGE": "Selects DEX with lowest price impact",
+    "HIGHEST_LIQUIDITY": "Selects DEX with highest pool liquidity",
+    "FASTEST_EXECUTION": "Selects fastest DEX for execution"
+  }
+}
+3. Get Quote (HTTP)
+Request:
 
-#### Orders
+bash
+POST /api/quotes
+Content-Type: application/json
 
-- `GET /api/orders?limit=50&offset=0`
-  - Returns paginated list of orders from PostgreSQL.
-- `GET /api/orders/:orderId`
-  - Returns details for a specific order (checked in Redis first, then PostgreSQL).
-- `POST /api/orders/execute`
-  - Creates a market order and returns an `orderId` and `websocketUrl`.
-  - Request body:
+{
+  "tokenIn": "SOL",
+  "tokenOut": "USDC",
+  "amountIn": 10,
+  "routingStrategy": "BEST_PRICE"
+}
+Response:
 
-    ```json
+json
+{
+  "tokenIn": "SOL",
+  "tokenOut": "USDC",
+  "amountIn": 10,
+  "routingStrategy": "BEST_PRICE",
+  "quote": {
+    "dex": "jupiter",
+    "estimatedOutput": 0.5079,
+    "price": 0.05098,
+    "slippage": 0.0012,
+    "liquidity": 8187507
+  }
+}
+4. Execute Order
+Request:
+
+bash
+POST /api/orders/execute
+Content-Type: application/json
+
+{
+  "tokenIn": "SOL",
+  "tokenOut": "USDC",
+  "amountIn": 10,
+  "orderType": "market",
+  "routingStrategy": "BEST_PRICE"
+}
+Response:
+
+json
+{
+  "orderId": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
+  "status": "pending",
+  "message": "Order created. Connect to WebSocket for real-time updates.",
+  "websocketUrl": "/api/orders/execute?orderId=9b6b6507-20c9-4654-82a7-8da5e82ff4a7&routingStrategy=BEST_PRICE",
+  "routingStrategy": "BEST_PRICE",
+  "autoExecuted": true
+}
+5. Get All Orders
+Request:
+
+bash
+GET /api/orders?limit=10&offset=0
+Response:
+
+json
+{
+  "orders": [
     {
-      "tokenIn": "SOL",
-      "tokenOut": "USDC",
-      "amountIn": 25,
-      "orderType": "market",
-      "slippage": 0.02,
-      "routingStrategy": "BEST_PRICE"
-    }
-    ```
-
-  - Response shape:
-
-    ```json
-    {
-      "orderId": "uuid",
-      "status": "pending",
-      "message": "Order created. Connect to WebSocket for real-time updates.",
-      "websocketUrl": "/api/orders/execute?orderId=uuid&routingStrategy=BEST_PRICE",
-      "routingStrategy": "BEST_PRICE"
-    }
-    ```
-
-- `WS /api/orders/execute?orderId=<id>&routingStrategy=<strategy>`
-  - WebSocket endpoint that streams status updates for a given order.
-  - Status lifecycle:
-    - `pending` – Order received and queued.
-    - `routing` – Comparing DEX prices / selecting DEX.
-    - `building` – Creating transaction.
-    - `submitted` – Transaction sent to network.
-    - `confirmed` – Transaction successful (includes `txHash`, execution price, amountOut, selected DEX).
-    - `failed` – Any failure (includes error message).
-
-#### Quotes and Routing Strategies
-
-- `GET /api/routing-strategies`
-  - Returns the list of supported routing strategies: `BEST_PRICE`, `LOWEST_SLIPPAGE`, `HIGHEST_LIQUIDITY`, `FASTEST_EXECUTION`.
-- `POST /api/quotes`
-  - Returns the best quote for a given token pair and amount, using the requested routing strategy.
-  - Body:
-
-    ```json
-    {
+      "id": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
       "tokenIn": "SOL",
       "tokenOut": "USDC",
       "amountIn": 10,
-      "routingStrategy": "BEST_PRICE"
+      "status": "confirmed",
+      "selectedDex": "jupiter",
+      "txHash": "5ced7d4c3fe29ce6...",
+      "createdAt": "2025-11-19T18:09:50.514Z"
     }
-    ```
-
-  - Response includes the chosen DEX and quote metrics (price, fee, slippage, liquidity, latencyMs, estimatedOutput).
-
-### Bot and Arbitrage Endpoints
-
-#### 1. Start Auto-Trading Bot
-curl -X POST http://localhost:3000/api/bots/start
--H "Content-Type: application/json"
--d '{
-"tokenIn": "SOL",
-"tokenOut": "USDC",
-"amountIn": 100,
-"triggerCondition": "below",
-"targetPrice": 0.051
-}'
-
-
-**Response:**
-{
-"success": true,
-"botId": "bot-uuid",
-"message": "Auto-trading bot started"
+  ],
+  "pagination": {
+    "limit": 10,
+    "offset": 0,
+    "count": 10
+  }
 }
+6. Get Order by ID
+Request:
 
+bash
+GET /api/orders/{orderId}
+Response:
 
-#### 2. Stop Auto-Trading Bot
-curl -X POST http://localhost:3000/api/bots/stop
--H "Content-Type: application/json"
--d '{"botId": "bot-uuid"}'
-
-
-#### 3. Get Active Bots
-curl http://localhost:3000/api/bots/active
-
-**Response:**
+json
 {
-"activeBotsCount": 1
+  "id": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
+  "tokenIn": "SOL",
+  "tokenOut": "USDC",
+  "amountIn": 10,
+  "status": "confirmed",
+  "selectedDex": "jupiter",
+  "txHash": "5ced7d4c3fe29ce6...",
+  "retryCount": 0,
+  "createdAt": "2025-11-19T18:09:50.514Z",
+  "updatedAt": "2025-11-19T18:10:00.123Z"
 }
+🎯 Routing Strategies
+1. BEST_PRICE
+Objective: Maximize output amount
+Formula: argmax(Oi) where Oi = output amount
+Use Case: Best for maximizing returns
 
-#### 4. Check Arbitrage Opportunity
-curl "http://localhost:3000/api/arbitrage/check?tokenIn=SOL&tokenOut=USDC&amount=100"
+Example:
 
-**Response:**
+json
 {
-"tokenIn": "SOL",
-"tokenOut": "USDC",
-"raydiumPrice": 0.0494,
-"meteoraPrice": 0.0504,
-"priceDifference": 0.001,
-"profitPercentage": 2.01
+  "routingStrategy": "BEST_PRICE"
 }
+2. LOWEST_SLIPPAGE
+Objective: Minimize price impact
+Formula: argmin(Si) where Si = slippage
+Use Case: Best for large orders to minimize price impact
 
-### How to Test the API (curl examples)
+Example:
 
-Assuming the server is running at `http://localhost:3000`:
+json
+{
+  "routingStrategy": "LOWEST_SLIPPAGE"
+}
+3. HIGHEST_LIQUIDITY
+Objective: Maximize pool liquidity
+Formula: argmax(Li) where Li = liquidity
+Use Case: Best for ensuring order execution in volatile markets
 
-```bash
-# Health
-curl "http://localhost:3000/health"
-curl "http://localhost:3000/api/health"
+Example:
 
-# Routing strategies
-curl "http://localhost:3000/api/routing-strategies"
+json
+{
+  "routingStrategy": "HIGHEST_LIQUIDITY"
+}
+4. FASTEST_EXECUTION
+Objective: Minimize execution time
+Formula: argmax(speed_rank(Di)) where Di = DEX identifier
+Use Case: Best for time-sensitive trades
 
-# Get best quote
-curl -X POST "http://localhost:3000/api/quotes" \
+Example:
+
+json
+{
+  "routingStrategy": "FASTEST_EXECUTION"
+}
+🧪 Testing
+Automated Test Suite
+Run the complete test suite:
+
+bash
+chmod +x test-phase3.sh
+./test-phase3.sh
+Manual Testing
+Test BEST_PRICE:
+
+bash
+curl -X POST http://localhost:3000/api/orders/execute \
   -H "Content-Type: application/json" \
   -d '{
     "tokenIn": "SOL",
@@ -299,204 +459,60 @@ curl -X POST "http://localhost:3000/api/quotes" \
     "amountIn": 10,
     "routingStrategy": "BEST_PRICE"
   }'
+Test LOWEST_SLIPPAGE:
 
-# Orders list and single order
-curl "http://localhost:3000/api/orders?limit=50&offset=0"
-curl "http://localhost:3000/api/orders/<ORDER_ID>"
-
-# Create order (market order)
-curl -X POST "http://localhost:3000/api/orders/execute" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tokenIn": "SOL",
-    "tokenOut": "USDC",
-    "amountIn": 25,
-    "orderType": "market",
-    "slippage": 0.02,
-    "routingStrategy": "BEST_PRICE"
-  }'
-
-# WebSocket for order lifecycle (requires orderId from previous response)
-npm install -g wscat
-wscat -c "ws://localhost:3000/api/orders/execute?orderId=<ORDER_ID>&routingStrategy=BEST_PRICE"
-
-# Bot endpoints
-curl -X POST "http://localhost:3000/api/bots/start" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tokenIn": "SOL",
-    "tokenOut": "USDC",
-    "amountIn": 100,
-    "triggerCondition": "below",
-    "targetPrice": 0.051
-  }'
-
-curl -X POST "http://localhost:3000/api/bots/stop" \
-  -H "Content-Type: application/json" \
-  -d '{"botId": "<BOT_ID>"}'
-
-curl "http://localhost:3000/api/bots/active"
-
-# Arbitrage check
-curl "http://localhost:3000/api/arbitrage/check?tokenIn=SOL&tokenOut=USDC&amount=100"
-```
-
-## Bot Features Explained
-
-### Auto-Trading Bot
-The auto-trading bot monitors token prices and automatically executes trades when your specified conditions are met:
-
-1. You start the bot with target price and condition (above/below)
-2. Bot polls DEX prices every 5 seconds
-3. When condition is met, bot automatically places order via WebSocket
-4. Bot stops after successful execution or manual stop
-
-**Use Case:** Set a target buy price and let the bot execute when market reaches it, even when you're away.
-
-### Arbitrage Bot
-The arbitrage bot detects profitable price differences between Raydium and Meteora:
-
-1. Call the API with token pair and amount
-2. Bot fetches prices from both DEXs
-3. If price difference exceeds threshold (2%), returns opportunity details
-4. You can then manually or automatically execute arbitrage trades
-
-**Use Case:** Find profitable opportunities where you can buy cheap on one DEX and sell higher on another.
-
-## Project Structure
-
-```
-order-execution-engine/
-├── src/
-│   ├── bots/                     # Bot implementations
-│   │   ├── autoTradingBot.ts     # Auto-trading bot logic
-│   │   ├── arbitrageBot.ts       # Arbitrage detection logic
-│   │   └── botManager.ts         # Bot lifecycle management
-│   ├── database/
-│   │   └── db.ts                 # PostgreSQL connection
-│   ├── repositories/
-│   │   └── orderRepository.ts    # Database queries
-│   ├── services/
-│   │   ├── mockDexRouter.ts      # Mock DEX price/execution
-│   │   ├── redisService.ts       # Redis operations
-│   │   ├── orderQueue.ts         # BullMQ queue management
-│   │   └── errorHandler.ts       # Error handling
-│   ├── errors/
-│   │   └── customErrors.ts       # Custom error classes
-│   ├── types.ts                  # TypeScript interfaces
-│   └── index.ts                  # Main server file
-├── .env                          # Environment variables
-├── package.json
-├── tsconfig.json
-└── README.md
-```
-
-## Testing
-
-### Manual Testing with cURL
-
-Test all endpoints using the provided cURL commands in the API documentation above.
-
-### WebSocket Testing
-
-If you want to test the WebSocket endpoint manually (without the Node client), you can still use `wscat` with an `orderId` returned from the POST step.
-
-1. Create an order via POST:
-
-```bash
+bash
 curl -X POST http://localhost:3000/api/orders/execute \
   -H "Content-Type: application/json" \
   -d '{
     "tokenIn": "SOL",
     "tokenOut": "USDC",
-    "amountIn": 25,
-    "orderType": "market",
-    "slippage": 0.02
+    "amountIn": 10,
+    "routingStrategy": "LOWEST_SLIPPAGE"
   }'
-```
-
-2. Copy the `orderId` from the response and connect with `wscat`:
-
-```bash
+WebSocket Testing
+bash
+# Install wscat
 npm install -g wscat
-wscat -c "ws://localhost:3000/api/orders/execute?orderId=<ORDER_ID>"
-```
 
-### Complete Bot Testing Script
+# Create order and get orderId
+ORDER_ID="your-order-id-here"
 
-#!/bin/bash
-
-Start bot
-BOT_RESPONSE=$(curl -s -X POST http://localhost:3000/api/bots/start
--H "Content-Type: application/json"
--d '{"tokenIn":"SOL","tokenOut":"USDC","amountIn":100,"triggerCondition":"below","targetPrice":0.051}')
-
-BOT_ID=$(echo "$BOT_RESPONSE" | grep -o '"botId":"[^"]*"' | cut -d'"' -f4)
-
-Check active bots
-curl -s http://localhost:3000/api/bots/active
-
-Check arbitrage
-curl -s "http://localhost:3000/api/arbitrage/check?tokenIn=SOL&tokenOut=USDC&amount=100"
-
-Wait for bot to potentially execute
-sleep 10
-
-Stop bot
-curl -s -X POST http://localhost:3000/api/bots/stop
--H "Content-Type: application/json"
--d "{"botId":"$BOT_ID"}"
-
-## Configuration
-
-### Order Processing Limits
-- `MAX_CONCURRENT_ORDERS`: Maximum orders processed simultaneously (default: 10)
-- `MAX_ORDERS_PER_MINUTE`: Rate limit for order submission (default: 100)
-- `MAX_RETRY_ATTEMPTS`: Number of retries for failed orders (default: 3)
-
-### Bot Configuration
-- Auto-trading bot checks prices every 5 seconds
-- Arbitrage threshold set to 2% profit minimum
-- Bots automatically stop after successful execution
-
-## Error Handling
-
-The system includes comprehensive error handling:
-- Input validation errors (400)
-- Not found errors (404)
-- Database/Redis connection errors (500)
-- Order execution failures with retry logic
-- WebSocket connection error recovery
-
-## Demo Video
-
-[Link to your demo video showing all features]
-
-## Deployment
-
-The application is ready for deployment on platforms like:
-- Railway
-- Render
-- Heroku
-- Vercel (for serverless deployment)
-
-Ensure all environment variables are configured in your deployment platform.
-
-## Development
-
-### Available Scripts
-
-npm run dev # Start development server with auto-reload
-npm start # Start production server
-npm run build # Compile TypeScript to JavaScript
-
-## License
-
-MIT License
-
-## Author
-
-[Mukul katewa]
-- GitHub: [@mukulkatewa](https://github.com/mukulkatewa)
-- Email: katewamukul@gmail.com
-
+# Connect to WebSocket
+wscat -c "ws://localhost:3000/api/orders/execute?orderId=${ORDER_ID}&routingStrategy=BEST_PRICE"
+📁 Project Structure
+text
+order-execution-engine-final/
+├── src/
+│   ├── index.ts                 # Main server file
+│   ├── types.ts                 # TypeScript interfaces
+│   │
+│   ├── database/
+│   │   ├── db.ts               # PostgreSQL connection
+│   │   └── schema.sql          # Database schema
+│   │
+│   ├── repositories/
+│   │   └── orderRepository.ts  # Database queries
+│   │
+│   ├── services/
+│   │   ├── orderQueue.ts       # BullMQ queue management
+│   │   ├── redisService.ts     # Redis operations
+│   │   ├── mockDexRouter.ts    # DEX interaction simulation
+│   │   ├── hub.ts              # RoutingHub (Phase 2)
+│   │   └── errorHandler.ts     # Error handling
+│   │
+│   ├── workers/
+│   │   ├── raydiumWorker.ts    # Raydium DEX worker
+│   │   ├── meteoraWorker.ts    # Meteora DEX worker
+│   │   ├── orcaWorker.ts       # Orca DEX worker
+│   │   └── jupiterWorker.ts    # Jupiter DEX worker
+│   │
+│   └── errors/
+│       └── customErrors.ts     # Custom error classes
+│
+├── .env                        # Environment variables
+├── .env.example                # Environment template
+├── package.json                # Dependencies
+├── tsconfig.json               # TypeScript config
+├── test-phase3.sh              # Test script
+└── README.md                   # This file
