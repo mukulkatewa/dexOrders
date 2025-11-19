@@ -1,24 +1,34 @@
-// src/services/orderQueue.ts
-// PHASE 2: Enhanced with better orchestration for parallel quote processing
+/**
+ * OrderQueue - Manages 4 separate DEX queues for parallel processing
+ * Based on Ani's queue.js pattern with separate queues per DEX
+ * 
+ * Architecture:
+ * - 4 independent queues: raydium-dex, meteora-dex, orca-dex, jupiter-dex
+ * - Each queue handles quote and swap jobs for its specific DEX
+ * - Enables true parallel quote fetching across all DEXs
+ */
 
 import { Queue } from 'bullmq';
 import { Order, RoutingStrategy } from '../types';
 import IORedis from 'ioredis';
 
-/**
- * OrderQueue manages multiple DEX queues for parallel processing
- * PHASE 2: Simplified to focus on orchestration
- * - JobScheduler handles parallel quote coordination
- * - Workers handle actual execution
- */
 export class OrderQueue {
-  // Map to hold individual DEX queues
-  private dexQueues: Map<string, Queue>;
-  private webSockets: Map<string, any> = new Map();
+  // Separate queue for each DEX (Ani's pattern)
+  private raydiumQueue: Queue;
+  private meteoraQueue: Queue;
+  private orcaQueue: Queue;
+  private jupiterQueue: Queue;
+  
+  // Shared Redis connection
   private connection: IORedis;
+  
+  // Track WebSocket connections per order
+  private webSockets: Map<string, any> = new Map();
 
   constructor() {
-    // Create Redis connection for BullMQ
+    console.log('[OrderQueue] Initializing with 4 separate DEX queues...');
+    
+    // Create shared Redis connection
     this.connection = new IORedis({
       host: process.env.REDIS_HOST || 'localhost',
       port: parseInt(process.env.REDIS_PORT || '6379'),
@@ -30,18 +40,156 @@ export class OrderQueue {
     });
 
     // Initialize separate queues for each DEX
-    this.dexQueues = new Map();
-    const dexNames = ['raydium', 'meteora', 'orca', 'jupiter'];
-    
-    for (const dex of dexNames) {
-      const queue = new Queue(`${dex}-dex`, { connection: this.connection });
-      this.dexQueues.set(dex, queue);
-      console.log(`[OrderQueue] Created queue for ${dex}`);
+    this.raydiumQueue = new Queue('raydium-dex', { connection: this.connection });
+    this.meteoraQueue = new Queue('meteora-dex', { connection: this.connection });
+    this.orcaQueue = new Queue('orca-dex', { connection: this.connection });
+    this.jupiterQueue = new Queue('jupiter-dex', { connection: this.connection });
+
+    console.log('[OrderQueue] ✅ Created 4 DEX queues: raydium, meteora, orca, jupiter');
+  }
+
+  /**
+   * Add a quote job to a specific DEX queue
+   * This enables parallel quote fetching
+   * 
+   * @param dex - DEX name (raydium, meteora, orca, jupiter)
+   * @param orderId - Order identifier
+   * @param tokenIn - Input token symbol
+   * @param tokenOut - Output token symbol
+   * @param amountIn - Input amount
+   * @param strategy - Routing strategy
+   */
+  async addQuoteJob(
+    dex: 'raydium' | 'meteora' | 'orca' | 'jupiter',
+    orderId: string,
+    tokenIn: string,
+    tokenOut: string,
+    amountIn: number,
+    strategy: RoutingStrategy
+  ): Promise<string> {
+    const queueMap = {
+      'raydium': this.raydiumQueue,
+      'meteora': this.meteoraQueue,
+      'orca': this.orcaQueue,
+      'jupiter': this.jupiterQueue
+    };
+
+    const queue = queueMap[dex];
+    console.log(`[OrderQueue] Adding quote job to ${dex} queue for order ${orderId}`);
+
+    const job = await queue.add('quote', {
+      jobType: 'quote',
+      orderId,
+      tokenIn,
+      tokenOut,
+      amountIn,
+      dex,
+      strategy
+    }, {
+      attempts: 3,
+      backoff: {
+        type: 'exponential',
+        delay: 5000
+      },
+      removeOnComplete: 10,
+      removeOnFail: 5
+    });
+
+    return job.id!;
+  }
+
+  /**
+   * Add a swap job to a specific DEX queue
+   * Called after routing hub selects the best DEX
+   * 
+   * @param dex - Selected DEX name
+   * @param orderId - Order identifier
+   * @param tokenIn - Input token symbol
+   * @param tokenOut - Output token symbol
+   * @param amountIn - Input amount
+   * @param wallet - Wallet address (optional)
+   */
+  async addSwapJob(
+    dex: 'raydium' | 'meteora' | 'orca' | 'jupiter',
+    orderId: string,
+    tokenIn: string,
+    tokenOut: string,
+    amountIn: number,
+    wallet?: string
+  ): Promise<string> {
+    const queueMap = {
+      'raydium': this.raydiumQueue,
+      'meteora': this.meteoraQueue,
+      'orca': this.orcaQueue,
+      'jupiter': this.jupiterQueue
+    };
+
+    const queue = queueMap[dex];
+    console.log(`[OrderQueue] Adding swap job to ${dex} queue for order ${orderId}`);
+
+    const job = await queue.add('swap', {
+      jobType: 'swap',
+      orderId,
+      tokenIn,
+      tokenOut,
+      amountIn,
+      dex,
+      wallet
+    }, {
+      attempts: 2,
+      backoff: {
+        type: 'exponential',
+        delay: 10000
+      },
+      removeOnComplete: 10,
+      removeOnFail: 10
+    });
+
+    return job.id!;
+  }
+
+  /**
+   * Add quote jobs for all DEXs in parallel (Ani's pattern)
+   * This is the key improvement: 4 workers fetch quotes simultaneously
+   * 
+   * @param order - Order details
+   * @param strategy - Routing strategy to apply
+   * @returns Array of job IDs
+   */
+  async addCompareQuotesJob(
+    order: Order,
+    strategy: RoutingStrategy = 'BEST_PRICE'
+  ): Promise<string[]> {
+    console.log(`[OrderQueue] Launching parallel quote collection for order ${order.id} with strategy ${strategy}`);
+
+     setImmediate(() => {
+    (process as any).emit('orderStrategySet', {
+      orderId: order.id,
+      strategy: strategy
+    });
+  });
+
+
+    try {
+      // Launch all 4 quote jobs simultaneously using Promise.all
+      const jobIds = await Promise.all([
+        this.addQuoteJob('raydium', order.id, order.tokenIn, order.tokenOut, order.amountIn, strategy),
+        this.addQuoteJob('meteora', order.id, order.tokenIn, order.tokenOut, order.amountIn, strategy),
+        this.addQuoteJob('orca', order.id, order.tokenIn, order.tokenOut, order.amountIn, strategy),
+        this.addQuoteJob('jupiter', order.id, order.tokenIn, order.tokenOut, order.amountIn, strategy)
+      ]);
+
+      console.log(`[OrderQueue] ✅ Launched ${jobIds.length} parallel quote jobs for order ${order.id}`);
+      return jobIds;
+    } catch (error) {
+      console.error(`[OrderQueue] ❌ Failed to launch parallel jobs for order ${order.id}:`, error);
+      throw error;
     }
   }
 
   /**
    * Register WebSocket for an order
+   * Used to broadcast status updates to the client
    */
   registerWebSocket(orderId: string, ws: any): void {
     this.webSockets.set(orderId, ws);
@@ -49,7 +197,7 @@ export class OrderQueue {
   }
 
   /**
-   * Unregister WebSocket
+   * Unregister WebSocket for an order
    */
   unregisterWebSocket(orderId: string): void {
     this.webSockets.delete(orderId);
@@ -64,161 +212,89 @@ export class OrderQueue {
   }
 
   /**
-   * PHASE 2: Add a quote job to a specific DEX queue
-   * This allows parallel quote fetching across all DEXs
-   */
-  async addQuoteJob(
-    dex: 'raydium' | 'meteora' | 'orca' | 'jupiter',
-    orderId: string,
-    tokenIn: string,
-    tokenOut: string,
-    amountIn: number,
-    strategy: RoutingStrategy
-  ): Promise<string> {
-    const queue = this.dexQueues.get(dex);
-    if (!queue) {
-      throw new Error(`Queue for DEX ${dex} not found`);
-    }
-
-    const job = await queue.add('quote', {
-      jobType: 'quote',
-      orderId,
-      tokenIn,
-      tokenOut,
-      amountIn,
-      dex,
-      strategy,
-    });
-
-    console.log(`[OrderQueue] Added quote job ${job.id} to ${dex} queue`);
-    return job.id!;
-  }
-
-  /**
-   * PHASE 2: Add swap job to a specific DEX queue
-   * Called after routing hub selects best DEX
-   */
-  async addSwapJob(
-    dex: 'raydium' | 'meteora' | 'orca' | 'jupiter',
-    orderId: string,
-    tokenIn: string,
-    tokenOut: string,
-    amountIn: number,
-    wallet?: string
-  ): Promise<string> {
-    const queue = this.dexQueues.get(dex);
-    if (!queue) {
-      throw new Error(`Queue for DEX ${dex} not found`);
-    }
-
-    const job = await queue.add('swap', {
-      jobType: 'swap',
-      orderId,
-      tokenIn,
-      tokenOut,
-      amountIn,
-      dex,
-      wallet,
-    });
-
-    console.log(`[OrderQueue] Added swap job ${job.id} to ${dex} queue`);
-    return job.id!;
-  }
-
-  /**
-   * PHASE 2: Add order for processing
-   * Entry point called by WebSocket handler
-   * JobScheduler will handle parallel quote coordination
-   */
-  async addOrder(order: Order, strategy: RoutingStrategy = 'BEST_PRICE'): Promise<void> {
-    console.log(`[OrderQueue] Order ${order.id} received with strategy ${strategy}`);
-    
-    // Note: Parallel quote processing is triggered by JobScheduler
-    // This method is kept for API compatibility
-    // The actual parallel jobs are launched by JobScheduler.addCompareQuotesJob()
-  }
-
-  /**
-   * Get specific queue by DEX name (for advanced use)
-   */
-  getQueue(dex: string): Queue | undefined {
-    return this.dexQueues.get(dex);
-  }
-
-  /**
-   * Get all queue names
-   */
-  getQueueNames(): string[] {
-    return Array.from(this.dexQueues.keys());
-  }
-
-  /**
-   * Check queue health
-   */
-  async getQueueHealth(): Promise<Record<string, any>> {
-    const health: Record<string, any> = {};
-    
-    for (const [dex, queue] of this.dexQueues) {
-      try {
-        const jobCounts = await queue.getJobCounts();
-        health[dex] = {
-          status: 'healthy',
-          ...jobCounts,
-        };
-      } catch (error: any) {
-        health[dex] = {
-          status: 'unhealthy',
-          error: error.message,
-        };
-      }
-    }
-    
-    return health;
-  }
-
-  /**
-   * Get Redis connection (for workers)
+   * Get Redis connection for workers to use
    */
   getConnection(): IORedis {
     return this.connection;
   }
 
   /**
-   * Close all queues and connection
+   * Get specific queue by DEX name (for advanced use)
+   */
+  getQueue(dex: string): Queue | undefined {
+    const queueMap: Record<string, Queue> = {
+      'raydium': this.raydiumQueue,
+      'meteora': this.meteoraQueue,
+      'orca': this.orcaQueue,
+      'jupiter': this.jupiterQueue
+    };
+    return queueMap[dex];
+  }
+
+  /**
+   * Get all queue names
+   */
+  getQueueNames(): string[] {
+    return ['raydium', 'meteora', 'orca', 'jupiter'];
+  }
+
+  /**
+   * Get queue health status for all DEXs
+   */
+  async getQueueHealth(): Promise<Record<string, any>> {
+    const health: Record<string, any> = {};
+    const queues = {
+      raydium: this.raydiumQueue,
+      meteora: this.meteoraQueue,
+      orca: this.orcaQueue,
+      jupiter: this.jupiterQueue
+    };
+
+    for (const [dex, queue] of Object.entries(queues)) {
+      try {
+        const jobCounts = await queue.getJobCounts();
+        health[dex] = {
+          status: 'healthy',
+          ...jobCounts
+        };
+      } catch (error: any) {
+        health[dex] = {
+          status: 'unhealthy',
+          error: error.message
+        };
+      }
+    }
+
+    return health;
+  }
+
+  /**
+   * Close all queues and Redis connection
    */
   async close(): Promise<void> {
     console.log('[OrderQueue] Closing all queues...');
     
-    for (const [dex, queue] of this.dexQueues) {
+    const queues = [
+      { name: 'raydium', queue: this.raydiumQueue },
+      { name: 'meteora', queue: this.meteoraQueue },
+      { name: 'orca', queue: this.orcaQueue },
+      { name: 'jupiter', queue: this.jupiterQueue }
+    ];
+
+    for (const { name, queue } of queues) {
       try {
         await queue.close();
-        console.log(`[OrderQueue] ✓ Closed queue for ${dex}`);
+        console.log(`[OrderQueue] ✅ Closed ${name} queue`);
       } catch (error: any) {
-        console.error(`[OrderQueue] ✗ Failed to close ${dex} queue:`, error.message);
+        console.error(`[OrderQueue] ❌ Failed to close ${name} queue:`, error.message);
       }
     }
-    
+
     try {
       await this.connection.quit();
-      console.log('[OrderQueue] ✓ Redis connection closed');
+      console.log('[OrderQueue] ✅ Redis connection closed');
     } catch (error: any) {
-      console.error('[OrderQueue] ✗ Failed to close Redis:', error.message);
-    }
-  }
-
-  /**
-   * PHASE 2: Clean up stale jobs (optional maintenance)
-   */
-  async cleanupStaleJobs(olderThanMs: number = 3600000): Promise<void> {
-    console.log(`[OrderQueue] Cleaning up jobs older than ${olderThanMs}ms...`);
-    
-    for (const [dex, queue] of this.dexQueues) {
-      try {
-        const cleaned = await queue.clean(olderThanMs, 100, 'completed');
-        console.log(`[OrderQueue] Cleaned ${cleaned.length} completed jobs from ${dex}`);
-      } catch (error: any) {
-        console.error(`[OrderQueue] Failed to clean ${dex} queue:`, error.message);
-      }
+      console.error('[OrderQueue] ❌ Failed to close Redis:', error.message);
     }
   }
 }
