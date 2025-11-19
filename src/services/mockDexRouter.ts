@@ -2,7 +2,7 @@
 // PHASE 2: Individual DEX quote methods for parallel worker processing
 // AMM Integration: Added liquidity pools and constant product formula
 
-import { AMMService, LiquidityPool, SwapCalculation } from './ammService';
+import { AMMService, LiquidityPool } from "./ammService";
 
 export interface DexQuote {
   dex: string;
@@ -27,10 +27,10 @@ export interface SwapResult {
 }
 
 export type RoutingStrategy =
-  | 'BEST_PRICE'
-  | 'LOWEST_SLIPPAGE'
-  | 'HIGHEST_LIQUIDITY'
-  | 'FASTEST_EXECUTION';
+  | "BEST_PRICE"
+  | "LOWEST_SLIPPAGE"
+  | "HIGHEST_LIQUIDITY"
+  | "FASTEST_EXECUTION";
 
 /**
  * MockDexRouter simulates DEX interactions
@@ -55,29 +55,30 @@ export class MockDexRouter {
    * In production, this would fetch from on-chain data
    */
   private initializeLiquidityPools(): void {
-    const dexes = ['raydium', 'meteora', 'orca', 'jupiter'];
+    // cspell:ignore raydium meteora
+    const dexes = ["raydium", "meteora", "orca", "jupiter"];
     const commonPairs = [
-      { tokenA: 'SOL', tokenB: 'USDC' },
-      { tokenA: 'SOL', tokenB: 'USDT' },
-      { tokenA: 'USDC', tokenB: 'USDT' },
+      { tokenA: "SOL", tokenB: "USDC" },
+      { tokenA: "SOL", tokenB: "USDT" },
+      { tokenA: "USDC", tokenB: "USDT" },
     ];
 
     dexes.forEach((dex) => {
       // DEX-specific fee structures
       const fee =
-        dex === 'jupiter'
+        dex === "jupiter"
           ? 0.0025 // Aggregator fee
-          : dex === 'orca'
+          : dex === "orca"
           ? 0.002 // Concentrated liquidity
           : 0.003; // Standard AMM
 
       // DEX-specific base reserves (simulating different liquidity levels)
       const reserveBase =
-        dex === 'jupiter'
+        dex === "jupiter"
           ? 5_000_000 // Aggregated liquidity
-          : dex === 'orca'
+          : dex === "orca"
           ? 3_000_000
-          : dex === 'meteora'
+          : dex === "meteora"
           ? 2_000_000
           : 1_500_000; // Raydium
 
@@ -87,7 +88,8 @@ export class MockDexRouter {
 
         // Create pool with realistic reserves
         const reserveA = reserveBase + Math.random() * reserveBase * 0.5;
-        const reserveB = reserveBase * 0.05 + Math.random() * reserveBase * 0.05 * 0.5; // Assuming ~0.05 price ratio
+        const reserveB =
+          reserveBase * 0.05 + Math.random() * reserveBase * 0.05 * 0.5; // Assuming ~0.05 price ratio
 
         const tempPool: LiquidityPool = {
           tokenA: pair.tokenA,
@@ -97,7 +99,7 @@ export class MockDexRouter {
           totalLiquidity: 0, // Will be calculated
           fee,
           dex,
-          poolAddress: `pool_${poolKey.replace(/-/g, '_')}`,
+          poolAddress: `pool_${poolKey.replace(/-/g, "_")}`,
         };
 
         const pool: LiquidityPool = {
@@ -117,37 +119,39 @@ export class MockDexRouter {
       });
     });
 
-    console.log(`[MockDexRouter] Initialized ${this.liquidityPools.size} liquidity pools`);
+    console.log(
+      `[MockDexRouter] Initialized ${this.liquidityPools.size} liquidity pools`
+    );
   }
 
   /**
    * Get or create a liquidity pool for a token pair
    * If pool doesn't exist, creates a mock one
    */
-  private getOrCreatePool(tokenIn: string, tokenOut: string, dex: string): LiquidityPool {
+  private getOrCreatePool(
+    tokenIn: string,
+    tokenOut: string,
+    dex: string
+  ): LiquidityPool {
     const poolKey = `${tokenIn}-${tokenOut}-${dex}`;
     let pool = this.liquidityPools.get(poolKey);
 
     if (!pool) {
       // Create a new mock pool if it doesn't exist
-      const fee =
-        dex === 'jupiter'
-          ? 0.0025
-          : dex === 'orca'
-          ? 0.002
-          : 0.003;
+      const fee = dex === "jupiter" ? 0.0025 : dex === "orca" ? 0.002 : 0.003;
 
       const reserveBase =
-        dex === 'jupiter'
+        dex === "jupiter"
           ? 5_000_000
-          : dex === 'orca'
+          : dex === "orca"
           ? 3_000_000
-          : dex === 'meteora'
+          : dex === "meteora"
           ? 2_000_000
           : 1_500_000;
 
       const reserveA = reserveBase + Math.random() * reserveBase * 0.5;
-      const reserveB = reserveBase * 0.05 + Math.random() * reserveBase * 0.05 * 0.5;
+      const reserveB =
+        reserveBase * 0.05 + Math.random() * reserveBase * 0.05 * 0.5;
 
       pool = {
         tokenA: tokenIn,
@@ -157,7 +161,7 @@ export class MockDexRouter {
         totalLiquidity: 2 * reserveA * (reserveB / reserveA),
         fee,
         dex,
-        poolAddress: `pool_${poolKey.replace(/-/g, '_')}`,
+        poolAddress: `pool_${poolKey.replace(/-/g, "_")}`,
       };
 
       this.liquidityPools.set(poolKey, pool);
@@ -176,7 +180,10 @@ export class MockDexRouter {
     this.liquidityPools.forEach((pool) => {
       const key = `${pool.tokenA}-${pool.tokenB}-${pool.dex}`;
       // Only include one direction of each pair
-      if (!seen.has(key) && !seen.has(`${pool.tokenB}-${pool.tokenA}-${pool.dex}`)) {
+      if (
+        !seen.has(key) &&
+        !seen.has(`${pool.tokenB}-${pool.tokenA}-${pool.dex}`)
+      ) {
         pools.push(pool);
         seen.add(key);
       }
@@ -222,8 +229,10 @@ export class MockDexRouter {
    */
   private generateMockTxHash(): string {
     return (
-      '5' +
-      Array.from({ length: 87 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
+      "5" +
+      Array.from({ length: 87 }, () =>
+        Math.floor(Math.random() * 16).toString(16)
+      ).join("")
     );
   }
 
@@ -243,11 +252,11 @@ export class MockDexRouter {
 
       // DEX-specific latency
       const latencyMs =
-        dex === 'jupiter'
+        dex === "jupiter"
           ? 80
-          : dex === 'raydium'
+          : dex === "raydium"
           ? 100
-          : dex === 'meteora'
+          : dex === "meteora"
           ? 120
           : 140;
 
@@ -268,7 +277,10 @@ export class MockDexRouter {
       };
     } catch (error) {
       // Fallback to legacy method if AMM calculation fails
-      console.warn(`[MockDexRouter] AMM calculation failed for ${dex}, using fallback:`, error);
+      console.warn(
+        `[MockDexRouter] AMM calculation failed for ${dex}, using fallback:`,
+        error
+      );
       return this.generateQuote(dex, amount);
     }
   }
@@ -286,11 +298,11 @@ export class MockDexRouter {
 
     // DEX-specific price adjustments
     const dexSpread =
-      dex === 'raydium'
+      dex === "raydium"
         ? 0.0
-        : dex === 'meteora'
+        : dex === "meteora"
         ? 0.0005
-        : dex === 'orca'
+        : dex === "orca"
         ? -0.0003
         : 0.0002;
 
@@ -299,28 +311,28 @@ export class MockDexRouter {
 
     // DEX-specific fee structures
     const fee =
-      dex === 'jupiter'
+      dex === "jupiter"
         ? 0.0025 // Aggregator fee
-        : dex === 'orca'
+        : dex === "orca"
         ? 0.002 // Concentrated liquidity
         : 0.003; // Standard AMM
 
     // DEX-specific slippage characteristics
     const baseSlippage = 0.001 + Math.random() * 0.004;
     const slippage =
-      dex === 'meteora'
+      dex === "meteora"
         ? baseSlippage * 0.7 // DLMM reduces slippage
-        : dex === 'orca'
+        : dex === "orca"
         ? baseSlippage * 0.8 // Concentrated liquidity
         : baseSlippage;
 
     // DEX-specific liquidity ranges
     const liquidityBase =
-      dex === 'jupiter'
+      dex === "jupiter"
         ? 5_000_000 // Aggregated liquidity
-        : dex === 'orca'
+        : dex === "orca"
         ? 3_000_000
-        : dex === 'meteora'
+        : dex === "meteora"
         ? 2_000_000
         : 1_500_000;
 
@@ -328,11 +340,11 @@ export class MockDexRouter {
 
     // DEX-specific latency
     const latencyMs =
-      dex === 'jupiter'
+      dex === "jupiter"
         ? 80 // Fastest (aggregator optimization)
-        : dex === 'raydium'
+        : dex === "raydium"
         ? 100
-        : dex === 'meteora'
+        : dex === "meteora"
         ? 120
         : 140; // Orca slowest (concentrated liquidity calculations)
 
@@ -367,9 +379,11 @@ export class MockDexRouter {
     amount: number
   ): Promise<DexQuote> {
     await this.sleep(this.quoteDelayMs);
-    console.log(`[MockDexRouter] Fetching Raydium quote for ${tokenIn}/${tokenOut}`);
+    console.log(
+      `[MockDexRouter] Fetching Raydium quote for ${tokenIn}/${tokenOut}`
+    );
     // Use AMM calculation for Raydium (standard AMM)
-    return this.generateAMMQuote('raydium', tokenIn, tokenOut, amount);
+    return this.generateAMMQuote("raydium", tokenIn, tokenOut, amount);
   }
 
   /**
@@ -382,20 +396,28 @@ export class MockDexRouter {
     amount: number
   ): Promise<DexQuote> {
     await this.sleep(this.quoteDelayMs);
-    console.log(`[MockDexRouter] Fetching Meteora quote for ${tokenIn}/${tokenOut}`);
+    console.log(
+      `[MockDexRouter] Fetching Meteora quote for ${tokenIn}/${tokenOut}`
+    );
     // Use AMM calculation for Meteora (DLMM is AMM-based)
-    return this.generateAMMQuote('meteora', tokenIn, tokenOut, amount);
+    return this.generateAMMQuote("meteora", tokenIn, tokenOut, amount);
   }
 
   /**
    * Get quote from Orca Whirlpool
    * Uses AMM calculation (concentrated liquidity still uses AMM formulas)
    */
-  async getOrcaQuote(tokenIn: string, tokenOut: string, amount: number): Promise<DexQuote> {
+  async getOrcaQuote(
+    tokenIn: string,
+    tokenOut: string,
+    amount: number
+  ): Promise<DexQuote> {
     await this.sleep(this.quoteDelayMs);
-    console.log(`[MockDexRouter] Fetching Orca quote for ${tokenIn}/${tokenOut}`);
+    console.log(
+      `[MockDexRouter] Fetching Orca quote for ${tokenIn}/${tokenOut}`
+    );
     // Use AMM calculation for Orca (concentrated liquidity AMM)
-    return this.generateAMMQuote('orca', tokenIn, tokenOut, amount);
+    return this.generateAMMQuote("orca", tokenIn, tokenOut, amount);
   }
 
   /**
@@ -408,22 +430,28 @@ export class MockDexRouter {
     amount: number
   ): Promise<DexQuote> {
     await this.sleep(this.quoteDelayMs);
-    console.log(`[MockDexRouter] Fetching Jupiter quote for ${tokenIn}/${tokenOut}`);
+    console.log(
+      `[MockDexRouter] Fetching Jupiter quote for ${tokenIn}/${tokenOut}`
+    );
     // Use AMM calculation for Jupiter (aggregates AMM-based DEXs)
-    return this.generateAMMQuote('jupiter', tokenIn, tokenOut, amount);
+    return this.generateAMMQuote("jupiter", tokenIn, tokenOut, amount);
   }
 
   /**
    * Get quotes from all DEXs (sequential - kept for backward compatibility)
    * Workers should use individual methods for true parallel processing
    */
-  async getQuotes(tokenIn: string, tokenOut: string, amount: number): Promise<DexQuote[]> {
+  async getQuotes(
+    tokenIn: string,
+    tokenOut: string,
+    amount: number
+  ): Promise<DexQuote[]> {
     await this.sleep(this.quoteDelayMs);
     return [
-      this.generateQuote('raydium', amount),
-      this.generateQuote('meteora', amount),
-      this.generateQuote('orca', amount),
-      this.generateQuote('jupiter', amount),
+      this.generateQuote("raydium", amount),
+      this.generateQuote("meteora", amount),
+      this.generateQuote("orca", amount),
+      this.generateQuote("jupiter", amount),
     ];
   }
 
@@ -432,18 +460,26 @@ export class MockDexRouter {
    */
   private selectBest(quotes: DexQuote[], strategy: RoutingStrategy): DexQuote {
     if (quotes.length === 0) {
-      throw new Error('No quotes available');
+      throw new Error("No quotes available");
     }
 
     switch (strategy) {
-      case 'BEST_PRICE':
-        return quotes.reduce((best, q) => (q.estimatedOutput > best.estimatedOutput ? q : best));
-      case 'LOWEST_SLIPPAGE':
-        return quotes.reduce((best, q) => (q.slippage < best.slippage ? q : best));
-      case 'HIGHEST_LIQUIDITY':
-        return quotes.reduce((best, q) => (q.liquidity > best.liquidity ? q : best));
-      case 'FASTEST_EXECUTION':
-        return quotes.reduce((best, q) => (q.latencyMs < best.latencyMs ? q : best));
+      case "BEST_PRICE":
+        return quotes.reduce((best, q) =>
+          q.estimatedOutput > best.estimatedOutput ? q : best
+        );
+      case "LOWEST_SLIPPAGE":
+        return quotes.reduce((best, q) =>
+          q.slippage < best.slippage ? q : best
+        );
+      case "HIGHEST_LIQUIDITY":
+        return quotes.reduce((best, q) =>
+          q.liquidity > best.liquidity ? q : best
+        );
+      case "FASTEST_EXECUTION":
+        return quotes.reduce((best, q) =>
+          q.latencyMs < best.latencyMs ? q : best
+        );
       default:
         return quotes[0];
     }
@@ -456,7 +492,7 @@ export class MockDexRouter {
     tokenIn: string,
     tokenOut: string,
     amount: number,
-    strategy: RoutingStrategy = 'BEST_PRICE'
+    strategy: RoutingStrategy = "BEST_PRICE"
   ): Promise<DexQuote> {
     const quotes = await this.getQuotes(tokenIn, tokenOut, amount);
     return this.selectBest(quotes, strategy);
@@ -466,7 +502,10 @@ export class MockDexRouter {
    * PHASE 2: Select best quote from pre-fetched quotes
    * Used by RoutingHub after parallel quote collection
    */
-  selectBestFromQuotes(quotes: DexQuote[], strategy: RoutingStrategy): DexQuote {
+  selectBestFromQuotes(
+    quotes: DexQuote[],
+    strategy: RoutingStrategy
+  ): DexQuote {
     return this.selectBest(quotes, strategy);
   }
 
@@ -496,8 +535,48 @@ export class MockDexRouter {
   }
 
   /**
+   * Update pool reserves after a swap
+   * This simulates the real AMM behavior where reserves change after each trade
+   */
+  private updatePoolReserves(
+    tokenIn: string,
+    tokenOut: string,
+    dex: string,
+    newReserveA: number,
+    newReserveB: number
+  ): void {
+    const poolKey = `${tokenIn}-${tokenOut}-${dex}`;
+    const pool = this.liquidityPools.get(poolKey);
+
+    if (pool) {
+      // Update the pool reserves
+      pool.reserveA = newReserveA;
+      pool.reserveB = newReserveB;
+      // Recalculate total liquidity
+      pool.totalLiquidity = this.ammService.calculateTotalLiquidity(pool);
+
+      // Also update reverse pair if it exists
+      const reverseKey = `${tokenOut}-${tokenIn}-${dex}`;
+      const reversePool = this.liquidityPools.get(reverseKey);
+      if (reversePool) {
+        reversePool.reserveA = newReserveB;
+        reversePool.reserveB = newReserveA;
+        reversePool.totalLiquidity =
+          this.ammService.calculateTotalLiquidity(reversePool);
+      }
+
+      console.log(
+        `[MockDexRouter] Updated pool ${poolKey}: ReserveA=${newReserveA.toFixed(
+          2
+        )}, ReserveB=${newReserveB.toFixed(2)}`
+      );
+    }
+  }
+
+  /**
    * PHASE 2: Execute swap on specific DEX (used by workers)
    * PHASE 2 FIX: Case-insensitive DEX name handling
+   * AMM UPDATE: Now updates pool reserves after swap to simulate real AMM behavior
    */
   async executeSwapOnDex(
     dex: string,
@@ -509,36 +588,32 @@ export class MockDexRouter {
     // PHASE 2 FIX: Normalize DEX name to lowercase
     const normalizedDex = dex.toLowerCase();
 
-    console.log(`[MockDexRouter] Executing swap on ${normalizedDex} for ${tokenIn}/${tokenOut}`);
+    console.log(
+      `[MockDexRouter] Executing swap on ${normalizedDex} for ${tokenIn}/${tokenOut}`
+    );
 
     // Validate DEX support
     if (!this.isSupportedDex(normalizedDex)) {
       throw new Error(`Unknown DEX: ${dex} (normalized: ${normalizedDex})`);
     }
 
-    // Get quote first to calculate output
-    let quote: DexQuote;
-    switch (normalizedDex) {
-      case 'raydium':
-        quote = await this.getRaydiumQuote(tokenIn, tokenOut, amountIn);
-        break;
-      case 'meteora':
-        quote = await this.getMeteoraQuote(tokenIn, tokenOut, amountIn);
-        break;
-      case 'orca':
-        quote = await this.getOrcaQuote(tokenIn, tokenOut, amountIn);
-        break;
-      case 'jupiter':
-        quote = await this.getJupiterQuote(tokenIn, tokenOut, amountIn);
-        break;
-      default:
-        throw new Error(`Unknown DEX: ${dex}`);
-    }
+    // Get pool and calculate swap
+    const pool = this.getOrCreatePool(tokenIn, tokenOut, normalizedDex);
+    const swapCalc = this.ammService.calculateSwap(pool, tokenIn, amountIn);
+
+    // Update pool reserves after swap (simulates real AMM behavior)
+    this.updatePoolReserves(
+      tokenIn,
+      tokenOut,
+      normalizedDex,
+      swapCalc.newReserveA,
+      swapCalc.newReserveB
+    );
 
     // Simulate swap execution delay (realistic blockchain latency)
     await this.sleep(1000 + Math.random() * 2000);
 
-    console.log(`[MockDexRouter] Executing swap on ${normalizedDex}`);
+    console.log(`[MockDexRouter] Swap executed on ${normalizedDex}`);
 
     const txHash = this.generateMockTxHash();
 
@@ -546,8 +621,8 @@ export class MockDexRouter {
       success: true,
       dex: normalizedDex,
       txHash,
-      executedPrice: quote.price,
-      amountOut: quote.estimatedOutput,
+      executedPrice: swapCalc.effectivePrice,
+      amountOut: swapCalc.amountOut,
       timestamp: new Date().toISOString(),
     };
   }
@@ -556,14 +631,16 @@ export class MockDexRouter {
    * Validate if DEX name is supported
    */
   isSupportedDex(dex: string): boolean {
-    return ['raydium', 'meteora', 'orca', 'jupiter'].includes(dex.toLowerCase());
+    return ["raydium", "meteora", "orca", "jupiter"].includes(
+      dex.toLowerCase()
+    );
   }
 
   /**
    * Get all supported DEX names
    */
   getSupportedDexes(): string[] {
-    return ['raydium', 'meteora', 'orca', 'jupiter'];
+    return ["raydium", "meteora", "orca", "jupiter"];
   }
 
   /**
@@ -572,28 +649,28 @@ export class MockDexRouter {
   getDexMetadata() {
     return {
       raydium: {
-        name: 'Raydium',
-        type: 'AMM',
+        name: "Raydium",
+        type: "AMM",
         avgLatency: 100,
-        description: 'Standard automated market maker on Solana',
+        description: "Standard automated market maker on Solana",
       },
       meteora: {
-        name: 'Meteora',
-        type: 'DLMM',
+        name: "Meteora",
+        type: "DLMM",
         avgLatency: 120,
-        description: 'Dynamic liquidity market maker with adaptive bins',
+        description: "Dynamic liquidity market maker with adaptive bins",
       },
       orca: {
-        name: 'Orca',
-        type: 'Whirlpool',
+        name: "Orca",
+        type: "Whirlpool",
         avgLatency: 140,
-        description: 'Concentrated liquidity pools for capital efficiency',
+        description: "Concentrated liquidity pools for capital efficiency",
       },
       jupiter: {
-        name: 'Jupiter',
-        type: 'Aggregator',
+        name: "Jupiter",
+        type: "Aggregator",
         avgLatency: 80,
-        description: 'DEX aggregator finding best routes across all DEXs',
+        description: "DEX aggregator finding best routes across all DEXs",
       },
     };
   }
