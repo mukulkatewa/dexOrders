@@ -1,6 +1,6 @@
 /**
  * ORDER EXECUTION ENGINE - Main Server
- * Phase 2: Hub-Based Routing with Mathematical Selection
+ * Phase 3: Enhanced WebSocket Updates & Real-Time Market Analysis
  */
 
 import dotenv from 'dotenv';
@@ -23,7 +23,7 @@ import { RedisService } from './services/redisService';
 import { OrderQueue } from './services/orderQueue';
 import { MockDexRouter } from './services/mockDexRouter';
 import { errorHandler } from './services/errorHandler';
-import { RoutingHub } from './services/hub'; // PHASE 2: Import RoutingHub
+import { RoutingHub } from './services/hub';
 
 // Types
 import { Order, OrderRequest, RoutingStrategy } from './types';
@@ -48,7 +48,7 @@ let orderRepository: OrderRepository;
 let redisService: RedisService;
 let orderQueue: OrderQueue;
 let dexWorkers: Worker[] = [];
-let routingHub: RoutingHub; // PHASE 2: Add RoutingHub
+let routingHub: RoutingHub;
 
 const httpDexRouter = new MockDexRouter();
 
@@ -116,26 +116,25 @@ async function initializeServices() {
   }
   console.log('[Init] ✓ Redis ready');
 
-  // Order Queue (4 separate DEX queues)
+  // Order Queue
   orderQueue = new OrderQueue();
   console.log('[Init] ✓ Order queue ready');
 
-  // PHASE 2: Initialize RoutingHub
+  // RoutingHub
   routingHub = new RoutingHub();
   console.log('[Init] ✓ RoutingHub ready');
 
   // DEX Workers
   await initializeDexWorkers();
 
-  // Setup quote collection (with RoutingHub)
+  // Setup quote collection
   setupQuoteCollection();
 
   console.log('[Init] ✓ All services initialized');
 }
 
 /**
- * PHASE 1: Initialize 4 DEX Workers
- * Each worker processes jobs from its dedicated queue
+ * Initialize 4 DEX Workers
  */
 async function initializeDexWorkers(): Promise<void> {
   console.log('[Workers] Starting DEX workers...');
@@ -143,7 +142,6 @@ async function initializeDexWorkers(): Promise<void> {
   const connection = orderQueue.getConnection();
 
   try {
-    // Create all 4 workers
     const raydiumWorker = createRaydiumWorker(connection);
     const meteoraWorker = createMeteoraWorker(connection);
     const orcaWorker = createOrcaWorker(connection);
@@ -153,7 +151,6 @@ async function initializeDexWorkers(): Promise<void> {
 
     console.log('[Workers] ✓ All 4 DEX workers started');
 
-    // Setup event bridge (Ani's pattern)
     setupWorkerEventBridge();
   } catch (error) {
     console.error('[Workers] ✗ Failed to start workers:', error);
@@ -162,18 +159,15 @@ async function initializeDexWorkers(): Promise<void> {
 }
 
 /**
- * PHASE 1: Event Bridge - Connect worker events to WebSocket
- * Workers emit 'orderStatusUpdate' events, this bridge broadcasts to WebSocket
+ * Event Bridge - Connect worker events to WebSocket
  */
 function setupWorkerEventBridge(): void {
   console.log('[EventBridge] Setting up listener...');
 
-  // Listen for status updates from all workers
   (process as any).on('orderStatusUpdate', (update: any) => {
     const ws = orderQueue.getWebSocket(update.orderId);
 
     if (ws && ws.readyState === 1) {
-      // WebSocket.OPEN
       try {
         ws.send(JSON.stringify(update));
         console.log(`[EventBridge] ✓ Sent ${update.status} update to ${update.orderId}`);
@@ -187,13 +181,11 @@ function setupWorkerEventBridge(): void {
 }
 
 /**
- * PHASE 1 & 2: Setup Quote Collection
- * Collects quotes from all workers and triggers swap using RoutingHub
+ * Setup Quote Collection
  */
 function setupQuoteCollection(): void {
   console.log('[QuoteCollection] Setting up collector...');
 
-  // Map to store quotes per order
   const orderQuotes = new Map<
     string,
     {
@@ -203,7 +195,6 @@ function setupQuoteCollection(): void {
     }
   >();
 
-  // PHASE 2: Store strategy when quotes are added to queue
   (process as any).on('orderStrategySet', (data: { orderId: string; strategy: RoutingStrategy }) => {
     if (!orderQuotes.has(data.orderId)) {
       orderQuotes.set(data.orderId, {
@@ -212,30 +203,26 @@ function setupQuoteCollection(): void {
         receivedCount: 0,
       });
     } else {
-      // Update strategy if already exists
       orderQuotes.get(data.orderId)!.strategy = data.strategy;
     }
     console.log(`[QuoteCollection] Strategy set to ${data.strategy} for order ${data.orderId}`);
   });
 
-  // Listen for quote completions from workers
   (process as any).on('quoteCompleted', (data: any) => {
     const { orderId, dex, quote } = data;
 
     console.log(`[QuoteCollection] Received quote from ${dex} for order ${orderId}`);
 
-    // Initialize order tracking if not exists
     if (!orderQuotes.has(orderId)) {
       orderQuotes.set(orderId, {
         quotes: [],
-        strategy: 'BEST_PRICE', // Default fallback
+        strategy: 'BEST_PRICE',
         receivedCount: 0,
       });
     }
 
     const orderData = orderQuotes.get(orderId)!;
 
-    // Add quote with DEX name
     orderData.quotes.push({
       dex,
       ...quote,
@@ -244,7 +231,6 @@ function setupQuoteCollection(): void {
 
     const ws = orderQueue.getWebSocket(orderId);
 
-    // Send progress update via WebSocket
     if (ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
@@ -262,18 +248,17 @@ function setupQuoteCollection(): void {
       );
     }
 
-    // When all 4 quotes collected, select best and execute
     if (orderData.receivedCount === 4) {
-      console.log(`[QuoteCollection] All quotes collected for order ${orderId} with strategy ${orderData.strategy}`);
+      console.log(
+        `[QuoteCollection] All quotes collected for order ${orderId} with strategy ${orderData.strategy}`
+      );
 
       processCollectedQuotes(orderId, orderData.quotes, orderData.strategy);
 
-      // Cleanup
       orderQuotes.delete(orderId);
     }
   });
 
-  // Handle quote failures
   (process as any).on('quoteFailed', (data: any) => {
     const { orderId, dex, error } = data;
 
@@ -282,7 +267,7 @@ function setupQuoteCollection(): void {
     if (!orderQuotes.has(orderId)) {
       orderQuotes.set(orderId, {
         quotes: [],
-        strategy: 'BEST_PRICE', // Default fallback
+        strategy: 'BEST_PRICE',
         receivedCount: 0,
       });
     }
@@ -292,7 +277,6 @@ function setupQuoteCollection(): void {
 
     const ws = orderQueue.getWebSocket(orderId);
 
-    // Notify via WebSocket
     if (ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
@@ -305,10 +289,11 @@ function setupQuoteCollection(): void {
       );
     }
 
-    // If all responses received (even with failures)
     if (orderData.receivedCount === 4) {
       if (orderData.quotes.length > 0) {
-        console.log(`[QuoteCollection] Processing ${orderData.quotes.length} valid quotes with strategy ${orderData.strategy}`);
+        console.log(
+          `[QuoteCollection] Processing ${orderData.quotes.length} valid quotes with strategy ${orderData.strategy}`
+        );
         processCollectedQuotes(orderId, orderData.quotes, orderData.strategy);
       } else {
         console.error(`[QuoteCollection] No valid quotes for order ${orderId}`);
@@ -331,9 +316,9 @@ function setupQuoteCollection(): void {
 
   console.log('[QuoteCollection] ✓ Quote collector active');
 }
+
 /**
- * PHASE 2: Process collected quotes using RoutingHub
- * Enhanced with mathematical tuple-based selection
+ * PHASE 3: Process collected quotes with enhanced WebSocket updates
  */
 async function processCollectedQuotes(
   orderId: string,
@@ -343,7 +328,7 @@ async function processCollectedQuotes(
   const ws = orderQueue.getWebSocket(orderId);
 
   try {
-    // Send all quotes to WebSocket
+    // PHASE 3: Send initial collection confirmation
     if (ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
@@ -362,29 +347,78 @@ async function processCollectedQuotes(
       );
     }
 
-    // PHASE 2: Validate quotes using RoutingHub
+    // PHASE 3: Validate quotes and send warnings immediately
     const validation = routingHub.validateQuotes(quotes);
 
     if (!validation.valid) {
+      if (ws && ws.readyState === 1) {
+        ws.send(
+          JSON.stringify({
+            orderId,
+            status: 'validation_failed',
+            errors: validation.errors,
+            timestamp: new Date().toISOString(),
+          })
+        );
+      }
       throw new Error(`Quote validation failed: ${validation.errors.join(', ')}`);
     }
 
-    // Send warnings if any
+    // PHASE 3: Send warnings if any
     if (validation.warnings.length > 0 && ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
           orderId,
           status: 'routing_warnings',
+          message: 'Detected potential routing issues',
           warnings: validation.warnings,
           timestamp: new Date().toISOString(),
         })
       );
     }
 
-    // PHASE 2: Get comprehensive routing analysis
+    // PHASE 3: Broadcast routing analysis start
+    if (ws && ws.readyState === 1) {
+      ws.send(
+        JSON.stringify({
+          orderId,
+          status: 'analyzing_routes',
+          message: `Analyzing routes using ${strategy} strategy...`,
+          strategy,
+          timestamp: new Date().toISOString(),
+        })
+      );
+    }
+
+    // Get comprehensive routing analysis
     const analysis = routingHub.getRoutingAnalysis(quotes);
 
-    // PHASE 2: Select best route using strategy-based optimization
+    // PHASE 3: Broadcast market metrics
+    if (ws && ws.readyState === 1) {
+      ws.send(
+        JSON.stringify({
+          orderId,
+          status: 'market_analysis',
+          message: 'Market analysis completed',
+          marketMetrics: {
+            totalQuotes: analysis.totalQuotes,
+            priceSpread: analysis.marketMetrics.priceSpread.toFixed(6),
+            priceSpreadPercentage: analysis.marketMetrics.priceSpreadPercentage.toFixed(2) + '%',
+            averagePrice: analysis.marketMetrics.averagePrice.toFixed(6),
+            bestOutputAmount: analysis.marketMetrics.bestOutputAmount.toFixed(6),
+            worstOutputAmount: analysis.marketMetrics.worstOutputAmount.toFixed(6),
+            outputDifference: (
+              analysis.marketMetrics.bestOutputAmount - analysis.marketMetrics.worstOutputAmount
+            ).toFixed(6),
+            averageSlippage: (analysis.marketMetrics.averageSlippage * 100).toFixed(3) + '%',
+            totalLiquidity: '$' + analysis.marketMetrics.totalLiquidity.toLocaleString(),
+          },
+          timestamp: new Date().toISOString(),
+        })
+      );
+    }
+
+    // Select best route
     const bestQuote = routingHub.selectBestRoute(quotes, strategy);
 
     console.log(`[RoutingHub] Selected ${bestQuote.provider} using ${strategy}:`, {
@@ -394,54 +428,65 @@ async function processCollectedQuotes(
       price: bestQuote.price,
     });
 
-    // PHASE 2: Send detailed routing analysis via WebSocket
+    // PHASE 3: Send detailed selection with reasoning
     if (ws && ws.readyState === 1) {
+      let reasoning = '';
+      switch (strategy) {
+        case 'BEST_PRICE':
+          reasoning = `Highest output amount: ${bestQuote.outputAmount.toFixed(6)} tokens`;
+          break;
+        case 'LOWEST_SLIPPAGE':
+          reasoning = `Lowest price impact: ${(bestQuote.slippage * 100).toFixed(3)}%`;
+          break;
+        case 'HIGHEST_LIQUIDITY':
+          reasoning = `Highest pool liquidity: $${bestQuote.liquidity.toLocaleString()}`;
+          break;
+        case 'FASTEST_EXECUTION':
+          reasoning = `Fastest execution speed (rank 4)`;
+          break;
+      }
+
       ws.send(
         JSON.stringify({
           orderId,
           status: 'dex_selected',
-          message: `Selected ${bestQuote.provider} for execution using ${strategy} strategy`,
+          message: `Selected ${bestQuote.provider} for execution`,
           selectedRoute: {
             dex: bestQuote.provider,
             estimatedOutput: bestQuote.outputAmount,
             price: bestQuote.price,
-            slippage: bestQuote.slippage,
-            liquidity: bestQuote.liquidity,
+            slippage: (bestQuote.slippage * 100).toFixed(3) + '%',
+            liquidity: '$' + bestQuote.liquidity.toLocaleString(),
           },
           strategy,
-          // PHASE 2: Include market metrics
-          marketMetrics: {
-            priceSpread: analysis.marketMetrics.priceSpread,
-            priceSpreadPercentage: analysis.marketMetrics.priceSpreadPercentage,
-            averagePrice: analysis.marketMetrics.averagePrice,
-            bestOutputAmount: analysis.marketMetrics.bestOutputAmount,
-            worstOutputAmount: analysis.marketMetrics.worstOutputAmount,
-            averageSlippage: analysis.marketMetrics.averageSlippage,
-            totalLiquidity: analysis.marketMetrics.totalLiquidity,
-          },
-          // PHASE 2: Show alternative routes for each strategy
+          reasoning,
+          // PHASE 3: Alternative routes
           alternativeRoutes: {
             BEST_PRICE: analysis.strategyAnalysis.BEST_PRICE
               ? {
                   dex: analysis.strategyAnalysis.BEST_PRICE.provider,
-                  outputAmount: analysis.strategyAnalysis.BEST_PRICE.outputAmount,
+                  outputAmount: analysis.strategyAnalysis.BEST_PRICE.outputAmount.toFixed(6),
+                  reason: 'Highest output',
                 }
               : null,
             LOWEST_SLIPPAGE: analysis.strategyAnalysis.LOWEST_SLIPPAGE
               ? {
                   dex: analysis.strategyAnalysis.LOWEST_SLIPPAGE.provider,
-                  slippage: analysis.strategyAnalysis.LOWEST_SLIPPAGE.slippage,
+                  slippage: (analysis.strategyAnalysis.LOWEST_SLIPPAGE.slippage * 100).toFixed(3) + '%',
+                  reason: 'Lowest slippage',
                 }
               : null,
             HIGHEST_LIQUIDITY: analysis.strategyAnalysis.HIGHEST_LIQUIDITY
               ? {
                   dex: analysis.strategyAnalysis.HIGHEST_LIQUIDITY.provider,
-                  liquidity: analysis.strategyAnalysis.HIGHEST_LIQUIDITY.liquidity,
+                  liquidity: '$' + analysis.strategyAnalysis.HIGHEST_LIQUIDITY.liquidity.toLocaleString(),
+                  reason: 'Highest liquidity',
                 }
               : null,
             FASTEST_EXECUTION: analysis.strategyAnalysis.FASTEST_EXECUTION
               ? {
                   dex: analysis.strategyAnalysis.FASTEST_EXECUTION.provider,
+                  reason: 'Fastest execution',
                 }
               : null,
           },
@@ -456,7 +501,20 @@ async function processCollectedQuotes(
       throw new Error('Order not found');
     }
 
-    // Trigger swap on selected DEX
+    // PHASE 3: Notify swap initiation
+    if (ws && ws.readyState === 1) {
+      ws.send(
+        JSON.stringify({
+          orderId,
+          status: 'initiating_swap',
+          message: `Preparing swap on ${bestQuote.provider}...`,
+          dex: bestQuote.provider,
+          timestamp: new Date().toISOString(),
+        })
+      );
+    }
+
+    // Trigger swap
     await orderQueue.addSwapJob(
       bestQuote.provider as any,
       orderId,
@@ -500,8 +558,7 @@ async function start() {
     await initializeServices();
     await registerPlugins();
 
-    // ==================== HEALTH ENDPOINTS ====================
-
+    // Health endpoints
     fastify.get('/health', async () => {
       const dbHealthy = await database.healthCheck().catch(() => false);
       const redisHealthy = redisService.isHealthy();
@@ -513,7 +570,7 @@ async function start() {
           database: dbHealthy ? 'up' : 'down',
           redis: redisHealthy ? 'up' : 'down',
           workers: dexWorkers.length === 4 ? 'up' : 'degraded',
-          routingHub: routingHub ? 'up' : 'down', // PHASE 2
+          routingHub: routingHub ? 'up' : 'down',
         },
       };
     });
@@ -529,31 +586,21 @@ async function start() {
           database: dbHealthy ? 'up' : 'down',
           redis: redisHealthy ? 'up' : 'down',
           workers: dexWorkers.length === 4 ? 'up' : 'degraded',
-          routingHub: routingHub ? 'up' : 'down', // PHASE 2
+          routingHub: routingHub ? 'up' : 'down',
         },
       };
     });
 
-    // ==================== ROUTING STRATEGIES ====================
-
-    // PHASE 2: Enhanced routing strategies endpoint
     fastify.get('/api/routing-strategies', async () => {
       return routingHub.getAvailableStrategies();
     });
-
-    // ==================== QUOTES ENDPOINT ====================
 
     fastify.post<{ Body: OrderRequest }>('/api/quotes', async (request) => {
       const body = request.body;
       validateOrderRequest(body);
       const strategy: RoutingStrategy = body.routingStrategy || 'BEST_PRICE';
 
-      const quote = await httpDexRouter.getBestQuote(
-        body.tokenIn,
-        body.tokenOut,
-        body.amountIn,
-        strategy
-      );
+      const quote = await httpDexRouter.getBestQuote(body.tokenIn, body.tokenOut, body.amountIn, strategy);
 
       return {
         tokenIn: body.tokenIn,
@@ -564,25 +611,18 @@ async function start() {
       };
     });
 
-    // ==================== ORDER ENDPOINTS ====================
+    fastify.get<{ Querystring: { limit?: string; offset?: string } }>('/api/orders', async (request) => {
+      const limit = Math.min(parseInt(request.query.limit || '50'), 1000);
+      const offset = Math.max(parseInt(request.query.offset || '0'), 0);
 
-    // Get all orders
-    fastify.get<{ Querystring: { limit?: string; offset?: string } }>(
-      '/api/orders',
-      async (request) => {
-        const limit = Math.min(parseInt(request.query.limit || '50'), 1000);
-        const offset = Math.max(parseInt(request.query.offset || '0'), 0);
+      const orders = await orderRepository.getOrders(limit, offset);
 
-        const orders = await orderRepository.getOrders(limit, offset);
+      return {
+        orders,
+        pagination: { limit, offset, count: orders.length },
+      };
+    });
 
-        return {
-          orders,
-          pagination: { limit, offset, count: orders.length },
-        };
-      }
-    );
-
-    // Get single order by ID
     fastify.get<{ Params: { orderId: string } }>('/api/orders/:orderId', async (request) => {
       const { orderId } = request.params;
 
@@ -601,7 +641,6 @@ async function start() {
       return order;
     });
 
-    // Create order (POST)
     fastify.post<{ Body: OrderRequest }>('/api/orders/execute', async (request) => {
       const body = request.body;
       validateOrderRequest(body);
@@ -623,7 +662,6 @@ async function start() {
 
       const strategy: RoutingStrategy = body.routingStrategy || 'BEST_PRICE';
 
-      // Trigger parallel quote fetching
       if (body.autoExecute !== false) {
         console.log(`[API] Triggering parallel quotes for ${order.id} with ${strategy}`);
         await orderQueue.addCompareQuotesJob(order, strategy);
@@ -639,103 +677,90 @@ async function start() {
       };
     });
 
-    // ==================== WEBSOCKET ENDPOINT ====================
-
     fastify.register(async function (fastifyInstance) {
-      fastifyInstance.get(
-        '/api/orders/execute',
-        { websocket: true },
-        (socket: any, request: any) => {
-          const ws = socket;
-          const query = (request.query || {}) as {
-            orderId?: string;
-            routingStrategy?: RoutingStrategy;
-          };
-          const orderId = query.orderId;
-          const strategy: RoutingStrategy =
-            query.routingStrategy && ROUTING_STRATEGIES.includes(query.routingStrategy)
-              ? query.routingStrategy
-              : 'BEST_PRICE';
+      fastifyInstance.get('/api/orders/execute', { websocket: true }, (socket: any, request: any) => {
+        const ws = socket;
+        const query = (request.query || {}) as {
+          orderId?: string;
+          routingStrategy?: RoutingStrategy;
+        };
+        const orderId = query.orderId;
+        const strategy: RoutingStrategy =
+          query.routingStrategy && ROUTING_STRATEGIES.includes(query.routingStrategy)
+            ? query.routingStrategy
+            : 'BEST_PRICE';
 
-          if (!orderId) {
-            ws.send(
-              JSON.stringify({
-                status: 'error',
-                message: 'orderId query parameter is required',
-                timestamp: new Date().toISOString(),
-              })
-            );
-            ws.close();
-            return;
-          }
+        if (!orderId) {
+          ws.send(
+            JSON.stringify({
+              status: 'error',
+              message: 'orderId query parameter is required',
+              timestamp: new Date().toISOString(),
+            })
+          );
+          ws.close();
+          return;
+        }
 
-          (async () => {
-            try {
-              let order =
-                (await redisService.getActiveOrder(orderId)) ||
-                (await orderRepository.getOrderById(orderId));
+        (async () => {
+          try {
+            let order =
+              (await redisService.getActiveOrder(orderId)) ||
+              (await orderRepository.getOrderById(orderId));
 
-              if (!order) {
-                ws.send(
-                  JSON.stringify({
-                    orderId,
-                    status: 'error',
-                    message: 'Order not found',
-                    timestamp: new Date().toISOString(),
-                  })
-                );
-                ws.close();
-                return;
-              }
-
-              // Register WebSocket for this order
-              orderQueue.registerWebSocket(order.id, ws);
-
-              // Send connection confirmation
+            if (!order) {
               ws.send(
                 JSON.stringify({
-                  orderId: order.id,
-                  status: 'pending',
-                  message: 'Order received and queued for execution',
-                  strategy,
+                  orderId,
+                  status: 'error',
+                  message: 'Order not found',
                   timestamp: new Date().toISOString(),
                 })
               );
-
-              // Trigger parallel quote processing
-              console.log(`[WebSocket] Triggering parallel quotes for ${order.id} with ${strategy}`);
-              await orderQueue.addCompareQuotesJob(order, strategy);
-            } catch (error) {
-              console.error('[WebSocket] Error:', error);
-              errorHandler.handleWebSocketError(
-                error instanceof Error ? error : new Error(String(error)),
-                ws,
-                orderId
-              );
               ws.close();
+              return;
             }
-          })();
 
-          ws.on('close', () => {
-            console.log(`[WebSocket] Disconnected: ${orderId}`);
-            orderQueue.unregisterWebSocket(orderId);
-          });
+            orderQueue.registerWebSocket(order.id, ws);
 
-          ws.on('error', (error: any) => {
+            ws.send(
+              JSON.stringify({
+                orderId: order.id,
+                status: 'pending',
+                message: 'Order received and queued for execution',
+                strategy,
+                timestamp: new Date().toISOString(),
+              })
+            );
+
+            console.log(`[WebSocket] Triggering parallel quotes for ${order.id} with ${strategy}`);
+            await orderQueue.addCompareQuotesJob(order, strategy);
+          } catch (error) {
             console.error('[WebSocket] Error:', error);
-          });
-        }
-      );
-    });
+            errorHandler.handleWebSocketError(
+              error instanceof Error ? error : new Error(String(error)),
+              ws,
+              orderId
+            );
+            ws.close();
+          }
+        })();
 
-    // ==================== ERROR HANDLER ====================
+        ws.on('close', () => {
+          console.log(`[WebSocket] Disconnected: ${orderId}`);
+          orderQueue.unregisterWebSocket(orderId);
+        });
+
+        ws.on('error', (error: any) => {
+          console.error('[WebSocket] Error:', error);
+        });
+      });
+    });
 
     fastify.setErrorHandler(async (error, request, reply) => {
       const errorInstance = error instanceof Error ? error : new Error(String(error));
       await errorHandler.handleError(errorInstance, request, reply);
     });
-
-    // ==================== START SERVER ====================
 
     const port = parseInt(process.env.PORT || '3000');
     const host = process.env.HOST || '0.0.0.0';
@@ -746,7 +771,8 @@ async function start() {
     console.log(`✓ WebSocket: ws://localhost:${port}/api/orders/execute`);
     console.log(`✓ DEX Workers: ${dexWorkers.length}/4 active`);
     console.log('✓ Quote Collection: active');
-    console.log('✓ RoutingHub: active with 4 strategies\n'); // PHASE 2
+    console.log('✓ RoutingHub: active with 4 strategies');
+    console.log('✓ Phase 3: Enhanced WebSocket updates active\n');
     console.log('Endpoints:');
     console.log('  GET  /health');
     console.log('  GET  /api/health');
@@ -762,14 +788,10 @@ async function start() {
   }
 }
 
-/**
- * Graceful shutdown
- */
 async function shutdown(signal: string) {
   console.log(`\n✓ Received ${signal}, shutting down...`);
 
   try {
-    // Close workers
     if (dexWorkers && dexWorkers.length > 0) {
       console.log('  Closing DEX workers...');
       for (const worker of dexWorkers) {
@@ -778,25 +800,21 @@ async function shutdown(signal: string) {
       console.log('  ✓ Workers closed');
     }
 
-    // Close order queue
     if (orderQueue) {
       console.log('  Closing order queue...');
       await orderQueue.close();
     }
 
-    // Close Redis
     if (redisService) {
       console.log('  Closing Redis...');
       await redisService.close();
     }
 
-    // Close database
     if (database) {
       console.log('  Closing database...');
       await database.close();
     }
 
-    // Close Fastify
     console.log('  Closing server...');
     await fastify.close();
 
@@ -808,7 +826,6 @@ async function shutdown(signal: string) {
   }
 }
 
-// Error handlers
 process.on('unhandledRejection', (reason, promise) => {
   console.error('Unhandled Promise Rejection:', reason);
   errorHandler.handleUnhandledRejection(reason, promise);
@@ -819,11 +836,9 @@ process.on('uncaughtException', (error) => {
   errorHandler.handleUncaughtException(error);
 });
 
-// Shutdown listeners
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-// Start application
 start().catch((error) => {
   console.error('Fatal startup error:', error);
   process.exit(1);

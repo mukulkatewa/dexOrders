@@ -1,14 +1,3 @@
-/**
- * Jupiter Worker - Handles quote fetching and swap execution for Jupiter DEX
- * Based on Ani's worker.js pattern with process.emit() for status updates
- * 
- * Key Features:
- * - Processes jobs from 'Jupiter-dex' queue
- * - Emits status updates via process.emit() events
- * - Realistic delays (2-5 seconds) for network simulation
- * - Progress tracking with job.updateProgress()
- */
-
 import { Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { MockDexRouter } from '../services/mockDexRouter';
@@ -35,87 +24,130 @@ interface OrderStatusUpdate {
 
 /**
  * Create Jupiter Worker
- * Processes quote and swap jobs for Jupiter DEX
+ * Processes quote and swap jobs for Jupiter DEX (aggregator)
  */
 export function createJupiterWorker(connection: IORedis): Worker {
   const dexRouter = new MockDexRouter();
-  
+
   const worker = new Worker<DexJobData>('jupiter-dex', async (job: Job<DexJobData>) => {
-    const { jobType, orderId, tokenIn, tokenOut, amountIn } = job.data;
-    
+    const { jobType, orderId, tokenIn, tokenOut, amountIn, dex } = job.data;
+
     console.log(`[Jupiter Worker] Processing ${jobType} for order ${orderId}`);
-    
+
     try {
       if (jobType === 'quote') {
         // ==================== QUOTE PROCESSING ====================
-        
+
         // Progress: 25% - Starting
         await job.updateProgress(25);
-        
-        // Emit status update with stage details (Ani's pattern)
+
+        // PHASE 3: Aggregator-specific messages
         emitStatusUpdate(orderId, 'routing', {
-          message: 'Fetching Jupiter liquidity data...',
+          message: 'Querying Jupiter aggregator routes...',
           dex: 'Jupiter',
-          stage: 'fetching_data'
+          stage: 'fetching_aggregator_data',
+          progress: 25,
         });
-        
-        // Simulate realistic network delay (2-5 seconds)
+
         const delay = 2000 + Math.random() * 3000;
         await sleep(delay / 2);
         await job.updateProgress(50);
-        
-        // Fetch quote from Jupiter
+
+        // PHASE 3: Route comparison across DEXs
+        emitStatusUpdate(orderId, 'routing', {
+          message: 'Comparing routes across all DEXs...',
+          dex: 'Jupiter',
+          stage: 'comparing_routes',
+          progress: 50,
+        });
+
+        // Fetch quote from Jupiter aggregator
         const quote = await dexRouter.getJupiterQuote(tokenIn, tokenOut, amountIn);
         await job.updateProgress(75);
-        
+
+        // PHASE 3: Multi-hop optimization
+        emitStatusUpdate(orderId, 'routing', {
+          message: 'Optimizing multi-hop path...',
+          dex: 'Jupiter',
+          stage: 'optimizing_path',
+          progress: 75,
+        });
+
         await sleep(delay / 2);
         await job.updateProgress(100);
-        
+
         console.log(`[Jupiter Worker] ✅ Quote completed: ${quote.estimatedOutput} ${tokenOut}`);
-        
+
         // Emit quote completion event for coordination
         emitQuoteCompletion(orderId, 'Jupiter', quote);
-        
+
         return quote;
-        
       } else if (jobType === 'swap') {
         // ==================== SWAP PROCESSING ====================
-        
+
         // Progress: 25% - Starting swap
         await job.updateProgress(25);
-        
+
+        // PHASE 3: Transaction building
         emitStatusUpdate(orderId, 'building', {
-          message: 'Creating Jupiter AMM transaction...',
+          message: 'Building Jupiter aggregator transaction...',
           dex: 'Jupiter',
-          stage: 'creating_transaction'
+          stage: 'creating_transaction',
+          progress: 25,
         });
-        
+
         const delay = 2000 + Math.random() * 3000;
         await sleep(delay / 2);
         await job.updateProgress(50);
-        
+
+        // PHASE 3: Transaction signing
+        emitStatusUpdate(orderId, 'building', {
+          message: 'Preparing transaction for signing...',
+          dex: 'Jupiter',
+          stage: 'preparing_signature',
+          progress: 50,
+        });
+
         // Execute swap on Jupiter
-        const result = await dexRouter.executeSwapOnDex('Jupiter', tokenIn, tokenOut, amountIn);
+        const result = await dexRouter.executeSwapOnDex(
+          'jupiter',
+          tokenIn,
+          tokenOut,
+          amountIn
+        );
         await job.updateProgress(75);
-        
+
+        // PHASE 3: Transaction submission
+        emitStatusUpdate(orderId, 'submitted', {
+          message: 'Transaction submitted to Solana network...',
+          dex: 'Jupiter',
+          stage: 'awaiting_confirmation',
+          txHash: result.txHash,
+          progress: 75,
+        });
+
         await sleep(delay / 2);
         await job.updateProgress(100);
-        
+
         console.log(`[Jupiter Worker] ✅ Swap completed: ${result.txHash}`);
-        
+
+        // PHASE 3: Final confirmation with full details
         emitStatusUpdate(orderId, 'confirmed', {
-          message: 'Transaction confirmed on Jupiter',
+          message: 'Transaction confirmed on-chain',
           dex: 'Jupiter',
           txHash: result.txHash,
           amountOut: result.amountOut,
-          executedPrice: result.executedPrice
+          executedPrice: result.executedPrice,
+          stage: 'completed',
+          progress: 100,
+          explorerUrl: `https://solscan.io/tx/${result.txHash}`,
         });
-        
+
         return result;
       }
     } catch (error: any) {
       console.error(`[Jupiter Worker] ❌ Error:`, error.message);
-      
+
       // Emit failure event
       if (jobType === 'quote') {
         emitQuoteFailure(orderId, 'Jupiter', error.message);
@@ -123,10 +155,10 @@ export function createJupiterWorker(connection: IORedis): Worker {
         emitStatusUpdate(orderId, 'failed', {
           message: `Jupiter swap failed: ${error.message}`,
           dex: 'Jupiter',
-          error: error.message
+          error: error.message,
         });
       }
-      
+
       throw error;
     }
   }, {
@@ -134,8 +166,8 @@ export function createJupiterWorker(connection: IORedis): Worker {
     concurrency: 5, // Process up to 5 jobs simultaneously
     limiter: {
       max: 10, // Maximum 10 jobs
-      duration: 1000 // per 1 second
-    }
+      duration: 1000, // per 1 second
+    },
   });
 
   // Setup event handlers for worker lifecycle
@@ -152,7 +184,7 @@ export function createJupiterWorker(connection: IORedis): Worker {
   });
 
   console.log('[Jupiter Worker] ✅ Started and listening for jobs');
-  
+
   return worker;
 }
 
@@ -167,9 +199,9 @@ function emitStatusUpdate(orderId: string, status: string, data: Record<string, 
     orderId,
     status,
     timestamp: new Date().toISOString(),
-    ...data
+    ...data,
   };
-  
+
   // Emit event that main process can listen to
   setImmediate(() => {
     (process as any).emit('orderStatusUpdate', statusUpdate);
@@ -186,7 +218,7 @@ function emitQuoteCompletion(orderId: string, dex: string, quote: any): void {
       orderId,
       dex,
       quote,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   });
   console.log(`[Jupiter Worker] 📤 Emitted quote completion for order ${orderId}`);
@@ -201,7 +233,7 @@ function emitQuoteFailure(orderId: string, dex: string, error: string): void {
       orderId,
       dex,
       error,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   });
   console.log(`[Jupiter Worker] ⚠️  Emitted quote failure for order ${orderId}`);
@@ -211,5 +243,5 @@ function emitQuoteFailure(orderId: string, dex: string, error: string): void {
  * Sleep utility
  */
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
