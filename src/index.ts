@@ -191,7 +191,7 @@ function setupQuoteCollection(): void {
     {
       quotes: any[];
       strategy: RoutingStrategy;
-      receivedCount: number;
+      receivedCount: number; //becomes 4 triggers route analysis
     }
   >();
 
