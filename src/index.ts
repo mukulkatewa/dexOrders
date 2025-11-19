@@ -595,6 +595,52 @@ async function start() {
       return routingHub.getAvailableStrategies();
     });
 
+    /**
+     * GET /api/liquidity-pools - Get liquidity pool information
+     * Query params:
+     *   - dex: Optional filter by DEX name (raydium, meteora, orca, jupiter)
+     *   - tokenA: Optional filter by first token
+     *   - tokenB: Optional filter by second token
+     */
+    fastify.get<{ Querystring: { dex?: string; tokenA?: string; tokenB?: string } }>(
+      '/api/liquidity-pools',
+      async (request) => {
+        const { dex, tokenA, tokenB } = request.query;
+
+        let pools = httpDexRouter.getLiquidityPoolsByDex(dex);
+
+        // Filter by token pair if provided
+        if (tokenA || tokenB) {
+          pools = pools.filter((pool) => {
+            const matchesA = !tokenA || 
+              pool.tokenA.toLowerCase() === tokenA.toLowerCase() || 
+              pool.tokenB.toLowerCase() === tokenA.toLowerCase();
+            const matchesB = !tokenB || 
+              pool.tokenA.toLowerCase() === tokenB.toLowerCase() || 
+              pool.tokenB.toLowerCase() === tokenB.toLowerCase();
+            return matchesA && matchesB;
+          });
+        }
+
+        // Calculate summary statistics
+        const totalLiquidity = pools.reduce((sum, pool) => sum + pool.totalLiquidity, 0);
+        const poolsByDex = pools.reduce((acc, pool) => {
+          acc[pool.dex] = (acc[pool.dex] || 0) + 1;
+          return acc;
+        }, {} as Record<string, number>);
+
+        return {
+          pools,
+          summary: {
+            totalPools: pools.length,
+            totalLiquidity,
+            poolsByDex,
+          },
+          timestamp: new Date().toISOString(),
+        };
+      }
+    );
+
     fastify.post<{ Body: OrderRequest }>('/api/quotes', async (request) => {
       const body = request.body;
       validateOrderRequest(body);
