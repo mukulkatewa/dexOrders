@@ -1,6 +1,5 @@
 /**
  * ORDER EXECUTION ENGINE - Main Server
- * Phase 3: Enhanced WebSocket Updates & Real-Time Market Analysis
  */
 
 import dotenv from 'dotenv';
@@ -318,7 +317,7 @@ function setupQuoteCollection(): void {
 }
 
 /**
- * PHASE 3: Process collected quotes with enhanced WebSocket updates
+ * Process collected quotes with enhanced WebSocket updates
  */
 async function processCollectedQuotes(
   orderId: string,
@@ -328,7 +327,7 @@ async function processCollectedQuotes(
   const ws = orderQueue.getWebSocket(orderId);
 
   try {
-    // PHASE 3: Send initial collection confirmation
+    //Send initial collection confirmation
     if (ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
@@ -347,7 +346,7 @@ async function processCollectedQuotes(
       );
     }
 
-    // PHASE 3: Validate quotes and send warnings immediately
+    // Validate quotes and send warnings immediately
     const validation = routingHub.validateQuotes(quotes);
 
     if (!validation.valid) {
@@ -364,7 +363,7 @@ async function processCollectedQuotes(
       throw new Error(`Quote validation failed: ${validation.errors.join(', ')}`);
     }
 
-    // PHASE 3: Send warnings if any
+    // Send warnings if any
     if (validation.warnings.length > 0 && ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
@@ -377,7 +376,7 @@ async function processCollectedQuotes(
       );
     }
 
-    // PHASE 3: Broadcast routing analysis start
+    // Broadcast routing analysis start
     if (ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
@@ -393,7 +392,7 @@ async function processCollectedQuotes(
     // Get comprehensive routing analysis
     const analysis = routingHub.getRoutingAnalysis(quotes);
 
-    // PHASE 3: Broadcast market metrics
+    // Broadcast market metrics
     if (ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
@@ -428,7 +427,7 @@ async function processCollectedQuotes(
       price: bestQuote.price,
     });
 
-    // PHASE 3: Send detailed selection with reasoning
+    // Send detailed selection with reasoning
     if (ws && ws.readyState === 1) {
       let reasoning = '';
       switch (strategy) {
@@ -501,7 +500,7 @@ async function processCollectedQuotes(
       throw new Error('Order not found');
     }
 
-    // PHASE 3: Notify swap initiation
+    // Notify swap initiation
     if (ws && ws.readyState === 1) {
       ws.send(
         JSON.stringify({
