@@ -53,6 +53,10 @@ export class MockDexRouter {
   /**
    * Initialize mock liquidity pools for each DEX
    * In production, this would fetch from on-chain data
+   *
+   * Realistic approach: Pools are initialized with similar prices (0.5-1.5% variance)
+   * to simulate real market conditions where arbitrage keeps prices aligned.
+   * Large price differences (>5%) are unrealistic as they would be quickly arbitraged away.
    */
   private initializeLiquidityPools(): void {
     // cspell:ignore raydium meteora
@@ -86,10 +90,25 @@ export class MockDexRouter {
         const poolKey = `${pair.tokenA}-${pair.tokenB}-${dex}`;
         const reverseKey = `${pair.tokenB}-${pair.tokenA}-${dex}`;
 
-        // Create pool with realistic reserves
-        const reserveA = reserveBase + Math.random() * reserveBase * 0.5;
-        const reserveB =
-          reserveBase * 0.05 + Math.random() * reserveBase * 0.05 * 0.5; // Assuming ~0.05 price ratio
+        // Realistic base price for common pairs (in production, this would come from oracles)
+        // Price = reserveB / reserveA, so for SOL/USDC: if 1 SOL = 50 USDC, then price = 50
+        const basePrice =
+          pair.tokenA === "SOL" && pair.tokenB === "USDC"
+            ? 50 // 1 SOL = 50 USDC (~$50 per SOL)
+            : pair.tokenA === "SOL" && pair.tokenB === "USDT"
+            ? 50 // Similar to USDC
+            : 1.0; // Stablecoin pairs (USDC/USDT) are ~1:1
+
+        // Create pools with realistic reserves that maintain similar prices across DEXs
+        // In real markets, arbitrage keeps prices within 0.1-2% of each other
+        // Add variance (0.5-3%) to simulate real market conditions and allow for testing
+        const priceVariance = 0.995 + Math.random() * 0.02; // 0.5% to 2.5% variance
+        const adjustedPrice = basePrice * priceVariance;
+
+        // Calculate reserves to maintain the target price
+        // Price = reserveB / reserveA, so reserveB = reserveA * price
+        const reserveA = reserveBase * (0.8 + Math.random() * 0.4); // 20% variance in liquidity
+        const reserveB = reserveA * adjustedPrice;
 
         const tempPool: LiquidityPool = {
           tokenA: pair.tokenA,
@@ -149,9 +168,21 @@ export class MockDexRouter {
           ? 2_000_000
           : 1_500_000;
 
-      const reserveA = reserveBase + Math.random() * reserveBase * 0.5;
-      const reserveB =
-        reserveBase * 0.05 + Math.random() * reserveBase * 0.05 * 0.5;
+      // Use realistic base price (same as initialization)
+      // Price = reserveB / reserveA, so for SOL/USDC: if 1 SOL = 50 USDC, then price = 50
+      const basePrice =
+        tokenIn === "SOL" && tokenOut === "USDC"
+          ? 50 // 1 SOL = 50 USDC (~$50 per SOL)
+          : tokenIn === "SOL" && tokenOut === "USDT"
+          ? 50 // Similar to USDC
+          : 1.0;
+
+      // Small variance to simulate real market conditions (0.5-2.5% to allow for testing)
+      const priceVariance = 0.995 + Math.random() * 0.02;
+      const adjustedPrice = basePrice * priceVariance;
+
+      const reserveA = reserveBase * (0.8 + Math.random() * 0.4);
+      const reserveB = reserveA * adjustedPrice;
 
       pool = {
         tokenA: tokenIn,
@@ -294,7 +325,7 @@ export class MockDexRouter {
    * - Jupiter: Aggregator, fastest execution
    */
   private generateQuote(dex: string, amount: number): DexQuote {
-    const basePrice = 0.05;
+    const basePrice = 50; // 1 SOL = 50 USDC (~$50 per SOL)
 
     // DEX-specific price adjustments
     const dexSpread =
@@ -440,6 +471,7 @@ export class MockDexRouter {
   /**
    * Get quotes from all DEXs (sequential - kept for backward compatibility)
    * Workers should use individual methods for true parallel processing
+   * Updated to use AMM methods for realistic quotes
    */
   async getQuotes(
     tokenIn: string,
@@ -447,11 +479,12 @@ export class MockDexRouter {
     amount: number
   ): Promise<DexQuote[]> {
     await this.sleep(this.quoteDelayMs);
+    // Use AMM-based quotes for realistic calculations
     return [
-      this.generateQuote("raydium", amount),
-      this.generateQuote("meteora", amount),
-      this.generateQuote("orca", amount),
-      this.generateQuote("jupiter", amount),
+      await this.getRaydiumQuote(tokenIn, tokenOut, amount),
+      await this.getMeteoraQuote(tokenIn, tokenOut, amount),
+      await this.getOrcaQuote(tokenIn, tokenOut, amount),
+      await this.getJupiterQuote(tokenIn, tokenOut, amount),
     ];
   }
 
