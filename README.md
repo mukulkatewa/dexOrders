@@ -49,11 +49,11 @@ Provides real-time WebSocket updates
 Supports multiple routing strategies based on user preferences
 
 Supported DEXs
-DEX	Type	Technology	Speed Rank
-Raydium	AMM	Standard Automated Market Maker	1
-Meteora	DLMM	Dynamic Liquidity Market Maker	3
-Orca	Whirlpool	Concentrated Liquidity	2
-Jupiter	Aggregator	Multi-DEX Routing	4 (Fastest)
+DEX Type Technology Speed Rank
+Raydium AMM Standard Automated Market Maker 1
+Meteora DLMM Dynamic Liquidity Market Maker 3
+Orca Whirlpool Concentrated Liquidity 2
+Jupiter Aggregator Multi-DEX Routing 4 (Fastest)
 ✨ Features
 Core Features
 ✅ Parallel Quote Fetching - Queries all DEXs simultaneously
@@ -93,37 +93,37 @@ Advanced Features
 System Design
 text
 ┌─────────────┐
-│   Client    │
+│ Client │
 └──────┬──────┘
-       │ HTTP/WebSocket
-       ▼
+│ HTTP/WebSocket
+▼
 ┌─────────────────────────────────────┐
-│         Fastify Server              │
-│  ┌─────────────────────────────┐   │
-│  │      RoutingHub             │   │
-│  │  (Mathematical Selection)   │   │
-│  └─────────────────────────────┘   │
+│ Fastify Server │
+│ ┌─────────────────────────────┐ │
+│ │ RoutingHub │ │
+│ │ (Mathematical Selection) │ │
+│ └─────────────────────────────┘ │
 └──────────┬──────────────────────────┘
-           │
-           ▼
-    ┌──────────────┐
-    │   BullMQ     │
-    │  (Redis)     │
-    └──────┬───────┘
-           │
-    ┌──────┴───────────────────┐
-    │                          │
-    ▼                          ▼
-┌─────────┐              ┌─────────┐
-│ Worker  │              │ Worker  │
-│ Pool    │   ...  x4    │ Pool    │
-│(Raydium)│              │(Jupiter)│
-└────┬────┘              └────┬────┘
-     │                        │
-     ▼                        ▼
+│
+▼
+┌──────────────┐
+│ BullMQ │
+│ (Redis) │
+└──────┬───────┘
+│
+┌──────┴───────────────────┐
+│ │
+▼ ▼
+┌─────────┐ ┌─────────┐
+│ Worker │ │ Worker │
+│ Pool │ ... x4 │ Pool │
+│(Raydium)│ │(Jupiter)│
+└────┬────┘ └────┬────┘
+│ │
+▼ ▼
 ┌─────────────────────────────────┐
-│      MockDexRouter              │
-│  (DEX Quote & Swap Execution)   │
+│ MockDexRouter │
+│ (DEX Quote & Swap Execution) │
 └─────────────────────────────────┘
 Data Flow
 Order Received (HTTP POST)
@@ -194,39 +194,45 @@ brew install postgresql@14 redis node
 Verify installations:
 
 bash
-node --version    # Should be >= 18.x
-psql --version    # Should be >= 14.x
+node --version # Should be >= 18.x
+psql --version # Should be >= 14.x
 redis-cli --version
 🚀 Installation
+
 1. Clone Repository
-bash
-git clone <your-repo-url>
-cd order-execution-engine-final
+   bash
+   git clone <your-repo-url>
+   cd order-execution-engine-final
 2. Install Dependencies
-bash
-npm install
+   bash
+   npm install
 3. Setup Database
-bash
+   bash
+
 # Start PostgreSQL
-sudo service postgresql start  # Linux
-brew services start postgresql@14  # macOS
+
+sudo service postgresql start # Linux
+brew services start postgresql@14 # macOS
 
 # Create database
+
 psql -U postgres
 CREATE DATABASE order_execution_db;
 \q
 
 # Run migrations
-psql -U postgres -d order_execution_db -f src/database/schema.sql
-4. Setup Redis
+
+psql -U postgres -d order_execution_db -f src/database/schema.sql 4. Setup Redis
 bash
+
 # Start Redis
-sudo service redis-server start  # Linux
-brew services start redis  # macOS
+
+sudo service redis-server start # Linux
+brew services start redis # macOS
 
 # Verify Redis is running
-redis-cli ping  # Should return "PONG"
-5. Environment Configuration
+
+redis-cli ping # Should return "PONG" 5. Environment Configuration
 Create .env file:
 
 bash
@@ -256,15 +262,19 @@ bash
 npm run dev
 Production Mode
 bash
+
 # Build TypeScript
+
 npm run build
 
 # Start server
+
 npm start
 Server will start at: http://localhost:3000
 
 📡 API Documentation
 Base URL
+
 ```
 http://localhost:3000
 ```
@@ -272,11 +282,13 @@ http://localhost:3000
 ### 1. Health Check
 
 **Request:**
+
 ```bash
 GET /api/health
 ```
 
 **Response:**
+
 ```json
 {
   "status": "healthy",
@@ -293,14 +305,21 @@ GET /api/health
 ### 2. Get Routing Strategies
 
 **Request:**
+
 ```bash
 GET /api/routing-strategies
 ```
 
 **Response:**
+
 ```json
 {
-  "strategies": ["BEST_PRICE", "LOWEST_SLIPPAGE", "HIGHEST_LIQUIDITY", "FASTEST_EXECUTION"],
+  "strategies": [
+    "BEST_PRICE",
+    "LOWEST_SLIPPAGE",
+    "HIGHEST_LIQUIDITY",
+    "FASTEST_EXECUTION"
+  ],
   "default": "BEST_PRICE",
   "descriptions": {
     "BEST_PRICE": "Selects DEX with highest output amount",
@@ -314,16 +333,19 @@ GET /api/routing-strategies
 ### 3. Get Liquidity Pools (NEW)
 
 **Request:**
+
 ```bash
 GET /api/liquidity-pools?dex=raydium&tokenA=SOL&tokenB=USDC
 ```
 
 **Query Parameters:**
+
 - `dex` (optional): Filter by DEX name (raydium, meteora, orca, jupiter)
 - `tokenA` (optional): Filter by first token
 - `tokenB` (optional): Filter by second token
 
 **Response:**
+
 ```json
 {
   "pools": [
@@ -355,6 +377,7 @@ GET /api/liquidity-pools?dex=raydium&tokenA=SOL&tokenB=USDC
 ### 4. Get Quote (HTTP)
 
 **Request:**
+
 ```bash
 POST /api/quotes
 Content-Type: application/json
@@ -368,6 +391,7 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
   "tokenIn": "SOL",
@@ -391,6 +415,7 @@ Content-Type: application/json
 ### 5. Execute Order
 
 **Request:**
+
 ```bash
 POST /api/orders/execute
 Content-Type: application/json
@@ -405,6 +430,7 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
   "orderId": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
@@ -419,11 +445,13 @@ Content-Type: application/json
 ### 6. Get All Orders
 
 **Request:**
+
 ```bash
 GET /api/orders?limit=10&offset=0
 ```
 
 **Response:**
+
 ```json
 {
   "orders": [
@@ -449,11 +477,13 @@ GET /api/orders?limit=10&offset=0
 ### 7. Get Order by ID
 
 **Request:**
+
 ```bash
 GET /api/orders/{orderId}
 ```
 
 **Response:**
+
 ```json
 {
   "id": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
@@ -470,19 +500,19 @@ GET /api/orders/{orderId}
 ```
 
 > 📚 **For detailed API documentation, see [ENDPOINTS_TESTING.md](./ENDPOINTS_TESTING.md)**
-🎯 Routing Strategies
+> 🎯 Routing Strategies
+
 1. BEST_PRICE
-Objective: Maximize output amount
-Formula: argmax(Oi) where Oi = output amount
-Use Case: Best for maximizing returns
+   Objective: Maximize output amount
+   Formula: argmax(Oi) where Oi = output amount
+   Use Case: Best for maximizing returns
 
 Example:
 
 json
 {
-  "routingStrategy": "BEST_PRICE"
-}
-2. LOWEST_SLIPPAGE
+"routingStrategy": "BEST_PRICE"
+} 2. LOWEST_SLIPPAGE
 Objective: Minimize price impact
 Formula: argmin(Si) where Si = slippage
 Use Case: Best for large orders to minimize price impact
@@ -491,9 +521,8 @@ Example:
 
 json
 {
-  "routingStrategy": "LOWEST_SLIPPAGE"
-}
-3. HIGHEST_LIQUIDITY
+"routingStrategy": "LOWEST_SLIPPAGE"
+} 3. HIGHEST_LIQUIDITY
 Objective: Maximize pool liquidity
 Formula: argmax(Li) where Li = liquidity
 Use Case: Best for ensuring order execution in volatile markets
@@ -502,9 +531,8 @@ Example:
 
 json
 {
-  "routingStrategy": "HIGHEST_LIQUIDITY"
-}
-4. FASTEST_EXECUTION
+"routingStrategy": "HIGHEST_LIQUIDITY"
+} 4. FASTEST_EXECUTION
 Objective: Minimize execution time
 Formula: argmax(speed_rank(Di)) where Di = DEX identifier
 Use Case: Best for time-sensitive trades
@@ -513,36 +541,41 @@ Example:
 
 json
 {
-  "routingStrategy": "FASTEST_EXECUTION"
+"routingStrategy": "FASTEST_EXECUTION"
 }
 🧪 Testing
 
 ### Automated Test Suites
 
 **Test All Endpoints:**
+
 ```bash
 chmod +x test-endpoints.sh
 ./test-endpoints.sh
 ```
 
 **Test Liquidity Pools:**
+
 ```bash
 chmod +x test-liquidity-pools.sh
 ./test-liquidity-pools.sh
 ```
 
 **Test AMM Price Changes:**
+
 ```bash
 npx ts-node test-amm-price-changes.ts
 ```
 
 This demonstrates how AMM prices change with multiple swaps, showing:
+
 - Pool reserves updating after each swap
 - Price movements (one token going up, other going down)
 - Price impact increasing with larger swaps
 - Reverse trades moving prices back
 
 **Phase 3 Test Suite:**
+
 ```bash
 chmod +x test-phase3.sh
 ./test-phase3.sh
@@ -551,6 +584,7 @@ chmod +x test-phase3.sh
 ### Manual Testing
 
 **Test BEST_PRICE:**
+
 ```bash
 curl -X POST http://localhost:3000/api/orders/execute \
   -H "Content-Type: application/json" \
@@ -563,6 +597,7 @@ curl -X POST http://localhost:3000/api/orders/execute \
 ```
 
 **Test Liquidity Pools:**
+
 ```bash
 # Get all pools
 curl http://localhost:3000/api/liquidity-pools
@@ -575,6 +610,7 @@ curl "http://localhost:3000/api/liquidity-pools?tokenA=SOL&tokenB=USDC"
 ```
 
 **WebSocket Testing:**
+
 ```bash
 # Install wscat
 npm install -g wscat
@@ -585,7 +621,9 @@ ORDER_ID="your-order-id-here"
 # Connect to WebSocket
 wscat -c "ws://localhost:3000/api/orders/execute?orderId=${ORDER_ID}&routingStrategy=BEST_PRICE"
 ```
+
 📁 Project Structure
+
 ```
 order-execution-engine-final/
 ├── src/
@@ -657,6 +695,7 @@ npx ts-node test-amm-price-changes.ts
 ```
 
 This demonstrates:
+
 - Multiple swaps changing pool reserves
 - Price movements (one token going up, other going down)
 - Increasing price impact with larger swaps
