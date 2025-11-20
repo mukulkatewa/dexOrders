@@ -74,6 +74,8 @@ Core Features
 
 ✅ **Pool Management** - Track liquidity pools across all DEXs with real-time reserve updates
 
+✅ **Queue Rate Limiting** - Each DEX queue enforces 10 jobs/sec (≈100 orders/min aggregate)
+
 Advanced Features
 🎯 Tuple-Based Optimization - Mathematical representation: qi = (Pi, Oi, Si, Li, Di)
 
