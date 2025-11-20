@@ -1,427 +1,134 @@
-🚀 Order Execution Engine - Solana DEX Aggregator
+# DexOrders – Solana DEX Order Engine
+
+DexOrders is a production-focused Solana order execution engine that:
+
+- Aggregates quotes across Raydium, Meteora, Orca, and Jupiter
+- Applies tuple-based routing strategies to pick the optimal venue
+- Streams real-time order progress over WebSocket
+- Uses the **DexOrders Liquidity Engine** (constant-product pools) for price discovery
+- Enforces queue-based rate limiting (10 jobs/sec per DEX queue ≈ 100 orders/min)
+
+---
+
+## 1. System Overview
+
+| Capability       | Description                                                                     |
+| ---------------- | ------------------------------------------------------------------------------- |
+| Market execution | POST `/api/orders/execute` creates an order and auto-subscribes via WebSocket   |
+| Parallel quotes  | Dedicated BullMQ queue per DEX to fetch quotes simultaneously                   |
+| Routing policies | BEST_PRICE · LOWEST_SLIPPAGE · HIGHEST_LIQUIDITY · FASTEST_EXECUTION            |
+| Liquidity engine | DexOrders Liquidity Engine (constant product `x*y=k`) with live reserve updates |
+| Persistence      | Orders stored in PostgreSQL, hot state cached in Redis                          |
+| Observability    | WebSocket status: pending → routing → building → submitted → confirmed          |
+
+### Why Market Orders?
+
+**Market orders** were selected for this implementation because they provide **immediate execution** at current market prices, which is the most common use case for traders prioritizing speed over price guarantees. This order type perfectly showcases parallel quote fetching, intelligent routing, and real-time telemetry without introducing the additional orchestration required for resting orders.
+
+---
+
+## 2. Architecture Snapshot
+
+```
+Client (HTTP/WebSocket)
+        │
+        ▼
+Fastify Server (src/index.ts)
+        │
+┌───────┴─────────┐
+│ PostgreSQL      │  ← order history
+│ Redis           │  ← active orders + BullMQ storage
+└───────┬─────────┘
+        │
+ BullMQ Queues (raydium | meteora | orca | jupiter)
+        │
+Workers (src/workers/*)  ← fetch quotes & run swaps
+        │
+RoutingHub (src/services/hub.ts)
+        │
+MockDexRouter + DexOrders Liquidity Engine
+```
+
+### Execution Flow
+
+1. Client POSTs `/api/orders/execute`
+2. Order validated, stored (PostgreSQL) and cached (Redis)
+3. Four quote jobs dispatched in parallel (one per DEX queue)
+4. Workers fetch quotes via MockDexRouter → DexOrders Liquidity Engine
+5. RoutingHub selects the best quote based on strategy
+6. Swap job enqueued on chosen DEX queue
+7. Worker executes swap, updates reserves, emits status events
+8. WebSocket pushes lifecycle events to the client
+
+---
+
+## 3. Key Components
+
+| Path                                  | Purpose                                                         |
+| ------------------------------------- | --------------------------------------------------------------- |
+| `src/index.ts`                        | Fastify bootstrap, plugin registration, REST + WebSocket routes |
+| `src/services/orderQueue.ts`          | BullMQ queues + rate limiting                                   |
+| `src/services/mockDexRouter.ts`       | Simulated DEX integrations                                      |
+| `src/services/ammService.ts`          | DexOrders Liquidity Engine math (`x*y=k`)                       |
+| `src/services/hub.ts`                 | Tuple-based routing strategies                                  |
+| `src/repositories/orderRepository.ts` | Order persistence                                               |
+| `src/workers/*.ts`                    | Raydium/Meteora/Orca/Jupiter workers (quotes + swaps)           |
+| `src/bots/*.ts`                       | Automation layer (auto-trader, arbitrage bot, bot manager)      |
+
+### Automation Bots
+
+- `bots/autoTradingBot.ts` – continuously submits strategy-driven orders against live quotes.
+- `bots/arbitrageBot.ts` – monitors price divergence and triggers execution when spreads exceed thresholds.
+- `bots/botManager.ts` – coordinates bot lifecycle, schedules jobs, and centralizes logging/alerts.
+  These modules are optional but demonstrate how DexOrders can power higher-level automated trading workflows on top of the core execution engine.
+
+---
+
+## 4. Installation & Setup
+
+### Prerequisites
+
+- Node.js ≥ 18
+- PostgreSQL ≥ 14
+- Redis ≥ 7
+
+### Steps
+
+```bash
+# 1. Clone
+git clone <repo-url>
+cd order-execution-engine-final
+
+# 2. Install deps
+npm install
 
-A high-performance order execution engine that routes trades across multiple Solana DEXs using parallel worker architecture, intelligent routing strategies, and **Automated Market Maker (AMM) liquidity pools**.
+# 3. Configure database
+sudo service postgresql start            # or brew services start postgresql@14
+psql -U postgres -c "CREATE DATABASE order_execution_db;"
+psql -U postgres -d order_execution_db -f src/database/schema.sql
 
-📋 Table of Contents
-Overview
+# 4. Configure Redis
+sudo service redis-server start          # or brew services start redis
+redis-cli ping                           # should return PONG
 
-Features
-
-Architecture
-
-Tech Stack
-
-Prerequisites
-
-Installation
-
-Configuration
-
-Running the Application
-
-API Documentation
-
-Routing Strategies
-
-Testing
-
-Project Structure
-
-Phase Implementation
-
-WebSocket Integration
-
-Troubleshooting
-
-Performance
-
-🎯 Overview
-The Order Execution Engine is a sophisticated trading system that:
-
-Routes orders across 4 major Solana DEXs (Raydium, Meteora, Orca, Jupiter)
-
-Uses parallel worker architecture for optimal performance
-
-Implements mathematical tuple-based route optimization
-
-Provides real-time WebSocket updates
-
-Supports multiple routing strategies based on user preferences
-
-Supported DEXs
-DEX Type Technology Speed Rank
-Raydium AMM Standard Automated Market Maker 1
-Meteora DLMM Dynamic Liquidity Market Maker 3
-Orca Whirlpool Concentrated Liquidity 2
-Jupiter Aggregator Multi-DEX Routing 4 (Fastest)
-✨ Features
-Core Features
-✅ Parallel Quote Fetching - Queries all DEXs simultaneously
-
-✅ Intelligent Route Selection - Mathematical optimization for best execution
-
-✅ Multiple Routing Strategies - BEST_PRICE, LOWEST_SLIPPAGE, HIGHEST_LIQUIDITY, FASTEST_EXECUTION
-
-✅ Real-Time Updates - WebSocket streaming of order status
-
-✅ Persistent Storage - PostgreSQL for order history
-
-✅ Fast Caching - Redis for active orders
-
-✅ Queue Management - BullMQ for reliable job processing
-
-✅ **Liquidity Pools & AMM** - Automated Market Maker with constant product formula (x × y = k)
-
-✅ **Pool Management** - Track liquidity pools across all DEXs with real-time reserve updates
-
-✅ **Queue Rate Limiting** - Each DEX queue enforces 10 jobs/sec (≈100 orders/min aggregate)
-
-Advanced Features
-🎯 Tuple-Based Optimization - Mathematical representation: qi = (Pi, Oi, Si, Li, Di)
-
-📊 Market Analysis - Price spread, liquidity metrics, slippage analysis
-
-🔄 Alternative Routes - Shows what other strategies would select
-
-⚡ High Performance - Sub-10 second order execution
-
-🛡️ Error Handling - Comprehensive error classification and recovery
-
-💧 **AMM Price Discovery** - Real-time price changes based on pool reserves
-
-📈 **Dynamic Reserves** - Pool reserves update after each swap, simulating real AMM behavior
-
-🏗️ Architecture
-System Design
-text
-┌─────────────┐
-│ Client │
-└──────┬──────┘
-│ HTTP/WebSocket
-▼
-┌─────────────────────────────────────┐
-│ Fastify Server │
-│ ┌─────────────────────────────┐ │
-│ │ RoutingHub │ │
-│ │ (Mathematical Selection) │ │
-│ └─────────────────────────────┘ │
-└──────────┬──────────────────────────┘
-│
-▼
-┌──────────────┐
-│ BullMQ │
-│ (Redis) │
-└──────┬───────┘
-│
-┌──────┴───────────────────┐
-│ │
-▼ ▼
-┌─────────┐ ┌─────────┐
-│ Worker │ │ Worker │
-│ Pool │ ... x4 │ Pool │
-│(Raydium)│ │(Jupiter)│
-└────┬────┘ └────┬────┘
-│ │
-▼ ▼
-┌─────────────────────────────────┐
-│ MockDexRouter │
-│ (DEX Quote & Swap Execution) │
-└─────────────────────────────────┘
-Data Flow
-Order Received (HTTP POST)
-
-Stored in PostgreSQL + Redis
-
-4 Quote Jobs Added to BullMQ (Parallel)
-
-Workers Fetch Quotes Simultaneously
-
-RoutingHub Analyzes All Quotes
-
-Best DEX Selected (Strategy-Based)
-
-Swap Job Triggered on Selected DEX
-
-Transaction Executed & Confirmed
-
-Order Status Updated (WebSocket + DB)
-
-🛠️ Tech Stack
-Backend
-Runtime: Node.js 18+ with TypeScript
-
-Framework: Fastify (High-performance web framework)
-
-Queue: BullMQ + Redis (Job processing)
-
-Database: PostgreSQL 14+ (Order persistence)
-
-Caching: Redis (Active order cache)
-
-WebSocket: @fastify/websocket (Real-time updates)
-
-Key Dependencies
-fastify: ^4.x
-
-bullmq: ^5.x
-
-ioredis: ^5.x
-
-pg: ^8.x
-
-typescript: ^5.x
-
-dotenv: ^16.x
-
-📦 Prerequisites
-Required Software
-Node.js 18.x or higher
-
-PostgreSQL 14.x or higher
-
-Redis 7.x or higher
-
-npm or yarn
-
-Installation Commands
-Ubuntu/Debian:
-
-bash
-sudo apt update
-sudo apt install postgresql-14 redis-server nodejs npm
-macOS (using Homebrew):
-
-bash
-brew install postgresql@14 redis node
-Verify installations:
-
-bash
-node --version # Should be >= 18.x
-psql --version # Should be >= 14.x
-redis-cli --version
-🚀 Installation
-
-1. Clone Repository
-   bash
-   git clone <your-repo-url>
-   cd order-execution-engine-final
-2. Install Dependencies
-   bash
-   npm install
-3. Setup Database
-   bash
-
-# Start PostgreSQL
-
-sudo service postgresql start # Linux
-brew services start postgresql@14 # macOS
-
-# Create database
-
-psql -U postgres
-CREATE DATABASE order_execution_db;
-\q
-
-# Run migrations
-
-psql -U postgres -d order_execution_db -f src/database/schema.sql 4. Setup Redis
-bash
-
-# Start Redis
-
-sudo service redis-server start # Linux
-brew services start redis # macOS
-
-# Verify Redis is running
-
-redis-cli ping # Should return "PONG" 5. Environment Configuration
-Create .env file:
-
-bash
+# 5. Environment
 cp .env.example .env
-Edit .env with your configuration:
+# update DB_*, REDIS_*, MAX_RETRY_ATTEMPTS, WORKER_CONCURRENCY, etc.
 
-text
-NODE_ENV=development
-PORT=3000
-HOST=0.0.0.0
-
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_NAME=order_execution_db
-
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_PASSWORD=
-
-MAX_RETRY_ATTEMPTS=3
-WORKER_CONCURRENCY=5
-🎮 Running the Application
-Development Mode
-bash
-npm run dev
-Production Mode
-bash
-
-# Build TypeScript
-
-npm run build
-
-# Start server
-
-npm start
-Server will start at: http://localhost:3000
-
-📡 API Documentation
-Base URL
-
-```
-http://localhost:3000
+# 6. Run
+npm run dev          # development (ts-node + nodemon)
+npm run build && npm start   # production (compiled JS)
 ```
 
-### 1. Health Check
+---
 
-**Request:**
+## 5. API Reference (essentials)
 
-```bash
-GET /api/health
-```
+### POST `/api/orders/execute`
 
-**Response:**
+Creates a market order and returns WebSocket info.
 
 ```json
-{
-  "status": "healthy",
-  "timestamp": "2025-11-19T18:00:00.000Z",
-  "services": {
-    "database": "up",
-    "redis": "up",
-    "workers": "up",
-    "routingHub": "up"
-  }
-}
-```
-
-### 2. Get Routing Strategies
-
-**Request:**
-
-```bash
-GET /api/routing-strategies
-```
-
-**Response:**
-
-```json
-{
-  "strategies": [
-    "BEST_PRICE",
-    "LOWEST_SLIPPAGE",
-    "HIGHEST_LIQUIDITY",
-    "FASTEST_EXECUTION"
-  ],
-  "default": "BEST_PRICE",
-  "descriptions": {
-    "BEST_PRICE": "Selects DEX with highest output amount",
-    "LOWEST_SLIPPAGE": "Selects DEX with lowest price impact",
-    "HIGHEST_LIQUIDITY": "Selects DEX with highest pool liquidity",
-    "FASTEST_EXECUTION": "Selects fastest DEX for execution"
-  }
-}
-```
-
-### 3. Get Liquidity Pools (NEW)
-
-**Request:**
-
-```bash
-GET /api/liquidity-pools?dex=raydium&tokenA=SOL&tokenB=USDC
-```
-
-**Query Parameters:**
-
-- `dex` (optional): Filter by DEX name (raydium, meteora, orca, jupiter)
-- `tokenA` (optional): Filter by first token
-- `tokenB` (optional): Filter by second token
-
-**Response:**
-
-```json
-{
-  "pools": [
-    {
-      "tokenA": "SOL",
-      "tokenB": "USDC",
-      "reserveA": 1636179.17,
-      "reserveB": 77662.57,
-      "totalLiquidity": 155325.14,
-      "fee": 0.003,
-      "dex": "raydium",
-      "poolAddress": "pool_SOL_USDC_raydium"
-    }
-  ],
-  "summary": {
-    "totalPools": 12,
-    "totalLiquidity": 4495023.52,
-    "poolsByDex": {
-      "raydium": 3,
-      "meteora": 3,
-      "orca": 3,
-      "jupiter": 3
-    }
-  },
-  "timestamp": "2025-11-19T22:03:56.845Z"
-}
-```
-
-### 4. Get Quote (HTTP)
-
-**Request:**
-
-```bash
-POST /api/quotes
-Content-Type: application/json
-
-{
-  "tokenIn": "SOL",
-  "tokenOut": "USDC",
-  "amountIn": 10,
-  "routingStrategy": "BEST_PRICE"
-}
-```
-
-**Response:**
-
-```json
-{
-  "tokenIn": "SOL",
-  "tokenOut": "USDC",
-  "amountIn": 10,
-  "routingStrategy": "BEST_PRICE",
-  "quote": {
-    "dex": "meteora",
-    "estimatedOutput": 0.5052,
-    "price": 0.05085,
-    "slippage": 0.0033,
-    "priceImpact": 0.3294,
-    "liquidity": 2504021.17,
-    "latencyMs": 120
-  }
-}
-```
-
-> **Note:** Quotes now use AMM calculations based on liquidity pool reserves!
-
-### 5. Execute Order
-
-**Request:**
-
-```bash
-POST /api/orders/execute
-Content-Type: application/json
-
 {
   "tokenIn": "SOL",
   "tokenOut": "USDC",
@@ -431,280 +138,116 @@ Content-Type: application/json
 }
 ```
 
-**Response:**
+Response excerpt:
 
 ```json
 {
-  "orderId": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
+  "orderId": "44f7ec7c-af29-400c-a6d8-f32885fd9578",
   "status": "pending",
-  "message": "Order created. Connect to WebSocket for real-time updates.",
-  "websocketUrl": "/api/orders/execute?orderId=9b6b6507-20c9-4654-82a7-8da5e82ff4a7&routingStrategy=BEST_PRICE",
-  "routingStrategy": "BEST_PRICE",
-  "autoExecuted": true
+  "message": "Connect to WebSocket for real-time updates.",
+  "websocketUrl": "/api/orders/execute?orderId=44f7ec7c-af29-400c-a6d8-f32885fd9578&routingStrategy=BEST_PRICE"
 }
 ```
 
-### 6. Get All Orders
+### GET `/api/liquidity-pools`
 
-**Request:**
+Filter by `dex`, `tokenA`, `tokenB`. Returns pool reserves, fees, liquidity, summaries.
 
-```bash
-GET /api/orders?limit=10&offset=0
-```
+### GET `/api/orders`
 
-**Response:**
+`?limit=10&offset=0` pagination. Returns persisted orders plus metadata.
 
-```json
-{
-  "orders": [
-    {
-      "id": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
-      "tokenIn": "SOL",
-      "tokenOut": "USDC",
-      "amountIn": 10,
-      "status": "confirmed",
-      "selectedDex": "jupiter",
-      "txHash": "5ced7d4c3fe29ce6...",
-      "createdAt": "2025-11-19T18:09:50.514Z"
-    }
-  ],
-  "pagination": {
-    "limit": 10,
-    "offset": 0,
-    "count": 10
-  }
-}
-```
+### WebSocket `/api/orders/execute`
 
-### 7. Get Order by ID
+Connect with `orderId` and optional `routingStrategy` to receive live updates.
 
-**Request:**
+---
 
-```bash
-GET /api/orders/{orderId}
-```
+## 6. Routing Strategies
 
-**Response:**
+| Strategy             | Goal                | Formula                                               |
+| -------------------- | ------------------- | ----------------------------------------------------- |
+| BEST_PRICE (default) | Max output          | `max(outputAmount)`                                   |
+| LOWEST_SLIPPAGE      | Min price impact    | `min(slippage)`                                       |
+| HIGHEST_LIQUIDITY    | Prefer deep pools   | `max(liquidity)`                                      |
+| FASTEST_EXECUTION    | Favor faster venues | DEX speed ranking: Jupiter > Meteora > Orca > Raydium |
 
-```json
-{
-  "id": "9b6b6507-20c9-4654-82a7-8da5e82ff4a7",
-  "tokenIn": "SOL",
-  "tokenOut": "USDC",
-  "amountIn": 10,
-  "status": "confirmed",
-  "selectedDex": "jupiter",
-  "txHash": "5ced7d4c3fe29ce6...",
-  "retryCount": 0,
-  "createdAt": "2025-11-19T18:09:50.514Z",
-  "updatedAt": "2025-11-19T18:10:00.123Z"
-}
-```
+---
 
-> 📚 **For detailed API documentation, see [ENDPOINTS_TESTING.md](./ENDPOINTS_TESTING.md)**
-> 🎯 Routing Strategies
+## 7. DexOrders Liquidity Engine
 
-1. BEST_PRICE
-   Objective: Maximize output amount
-   Formula: argmax(Oi) where Oi = output amount
-   Use Case: Best for maximizing returns
+- Implements constant-product pricing (`x * y = k`)
+- Maintains 12 liquidity pools (SOL/USDC, SOL/USDT, USDC/USDT across 4 DEXs)
+- Updates reserves after every simulated swap
+- Produces realistic slippage, price impact, and latency values
 
-Example:
-
-json
-{
-"routingStrategy": "BEST_PRICE"
-} 2. LOWEST_SLIPPAGE
-Objective: Minimize price impact
-Formula: argmin(Si) where Si = slippage
-Use Case: Best for large orders to minimize price impact
-
-Example:
-
-json
-{
-"routingStrategy": "LOWEST_SLIPPAGE"
-} 3. HIGHEST_LIQUIDITY
-Objective: Maximize pool liquidity
-Formula: argmax(Li) where Li = liquidity
-Use Case: Best for ensuring order execution in volatile markets
-
-Example:
-
-json
-{
-"routingStrategy": "HIGHEST_LIQUIDITY"
-} 4. FASTEST_EXECUTION
-Objective: Minimize execution time
-Formula: argmax(speed_rank(Di)) where Di = DEX identifier
-Use Case: Best for time-sensitive trades
-
-Example:
-
-json
-{
-"routingStrategy": "FASTEST_EXECUTION"
-}
-🧪 Testing
-
-### Automated Test Suites
-
-**Test All Endpoints:**
-
-```bash
-chmod +x test-endpoints.sh
-./test-endpoints.sh
-```
-
-**Test Liquidity Pools:**
-
-```bash
-chmod +x test-liquidity-pools.sh
-./test-liquidity-pools.sh
-```
-
-**Test AMM Price Changes:**
+Testing price dynamics:
 
 ```bash
 npx ts-node test-amm-price-changes.ts
 ```
 
-This demonstrates how AMM prices change with multiple swaps, showing:
+The script buys and sells in sequence, demonstrating how reserves and prices move.
 
-- Pool reserves updating after each swap
-- Price movements (one token going up, other going down)
-- Price impact increasing with larger swaps
-- Reverse trades moving prices back
+---
 
-**Phase 3 Test Suite:**
+## 8. Testing & Tooling
 
-```bash
-chmod +x test-phase3.sh
-./test-phase3.sh
-```
+| Command                     | Description                   |
+| --------------------------- | ----------------------------- |
+| `npm test`                  | Jest unit/integration suite   |
+| `npm test -- --coverage`    | Coverage report               |
+| `./test-endpoints.sh`       | Smoke test all REST endpoints |
+| `./test-liquidity-pools.sh` | Validate liquidity API output |
+| `./test-phase3.sh`          | Phase 3 scenario checks       |
 
-### Manual Testing
+---
 
-**Test BEST_PRICE:**
-
-```bash
-curl -X POST http://localhost:3000/api/orders/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tokenIn": "SOL",
-    "tokenOut": "USDC",
-    "amountIn": 10,
-    "routingStrategy": "BEST_PRICE"
-  }'
-```
-
-**Test Liquidity Pools:**
-
-```bash
-# Get all pools
-curl http://localhost:3000/api/liquidity-pools
-
-# Filter by DEX
-curl "http://localhost:3000/api/liquidity-pools?dex=raydium"
-
-# Filter by token pair
-curl "http://localhost:3000/api/liquidity-pools?tokenA=SOL&tokenB=USDC"
-```
-
-**WebSocket Testing:**
-
-```bash
-# Install wscat
-npm install -g wscat
-
-# Create order and get orderId
-ORDER_ID="your-order-id-here"
-
-# Connect to WebSocket
-wscat -c "ws://localhost:3000/api/orders/execute?orderId=${ORDER_ID}&routingStrategy=BEST_PRICE"
-```
-
-📁 Project Structure
+## 9. Project Structure
 
 ```
 order-execution-engine-final/
-├── src/
-│   ├── index.ts                 # Main server file
-│   ├── types.ts                 # TypeScript interfaces
-│   │
-│   ├── database/
-│   │   ├── db.ts               # PostgreSQL connection
-│   │   └── schema.sql          # Database schema
-│   │
-│   ├── repositories/
-│   │   └── orderRepository.ts  # Database queries
-│   │
-│   ├── services/
-│   │   ├── orderQueue.ts       # BullMQ queue management
-│   │   ├── redisService.ts     # Redis operations
-│   │   ├── mockDexRouter.ts    # DEX interaction + AMM pools
-│   │   ├── ammService.ts       # AMM calculations (NEW)
-│   │   ├── hub.ts              # RoutingHub (Phase 2)
-│   │   └── errorHandler.ts     # Error handling
-│   │
-│   ├── workers/
-│   │   ├── raydiumWorker.ts    # Raydium DEX worker
-│   │   ├── meteoraWorker.ts    # Meteora DEX worker
-│   │   ├── orcaWorker.ts       # Orca DEX worker
-│   │   └── jupiterWorker.ts    # Jupiter DEX worker
-│   │
-│   └── errors/
-│       └── customErrors.ts     # Custom error classes
-│
-├── .env                        # Environment variables
-├── .env.example                # Environment template
-├── package.json                # Dependencies
-├── tsconfig.json               # TypeScript config
-├── test-endpoints.sh           # Endpoint test script
-├── test-liquidity-pools.sh     # Liquidity pool test script
-├── test-amm-price-changes.ts   # AMM price change demo
-├── test-phase3.sh              # Phase 3 test script
-├── ENDPOINTS_TESTING.md        # API documentation
-├── AMM_EXPLANATION.md          # AMM mechanics guide
-├── HOW_IT_WORKS.md             # System explanation
-└── README.md                   # This file
+├─ src/
+│  ├─ index.ts
+│  ├─ types.ts
+│  ├─ database/
+│  │  ├─ db.ts
+│  │  └─ schema.sql
+│  ├─ repositories/orderRepository.ts
+│  ├─ services/
+│  │  ├─ ammService.ts
+│  │  ├─ hub.ts
+│  │  ├─ mockDexRouter.ts
+│  │  ├─ orderQueue.ts
+│  │  ├─ redisService.ts
+│  │  └─ errorHandler.ts
+│  ├─ workers/
+│  │  ├─ raydiumWorker.ts
+│  │  ├─ meteoraWorker.ts
+│  │  ├─ orcaWorker.ts
+│  │  └─ jupiterWorker.ts
+│  └─ tests/…
+├─ test-endpoints.sh
+├─ test-liquidity-pools.sh
+├─ test-amm-price-changes.ts
+├─ package.json
+├─ tsconfig.json
+└─ README.md
 ```
 
-## 💧 Liquidity Pools & AMM
+---
 
-The system now includes full Automated Market Maker (AMM) functionality using the constant product formula (x × y = k).
+## 10. Troubleshooting
 
-### Key Features
+| Symptom                       | Checks                                                                       |
+| ----------------------------- | ---------------------------------------------------------------------------- |
+| PostgreSQL connection refused | `sudo service postgresql start`, verify `.env` credentials                   |
+| Redis connection refused      | `sudo service redis-server start`, ensure port 6379                          |
+| Queues stuck                  | Confirm server is running (workers bootstrap inside `index.ts`), check Redis |
+| WebSocket 400                 | Provide `orderId` query param and ensure order exists/active                 |
 
-- **Pool Management**: Each DEX maintains its own liquidity pools for token pairs
-- **Real-time Reserves**: Pool reserves update after each swap
-- **Price Discovery**: Prices are determined by the ratio of reserves
-- **AMM Calculations**: All quotes use the constant product formula
+---
 
-### How It Works
+## 11. License
 
-1. **Pool Initialization**: Pools are created at startup with realistic reserves
-2. **Quote Calculation**: Uses AMM formula based on current reserves
-3. **Swap Execution**: Updates pool reserves after each swap
-4. **Price Changes**: Prices move based on supply/demand (reserve ratios)
-
-### Testing AMM Behavior
-
-Run the AMM price change test to see how prices move:
-
-```bash
-npx ts-node test-amm-price-changes.ts
-```
-
-This demonstrates:
-
-- Multiple swaps changing pool reserves
-- Price movements (one token going up, other going down)
-- Increasing price impact with larger swaps
-- Reverse trades moving prices back
-
-### Documentation
-
-- **[AMM_EXPLANATION.md](./AMM_EXPLANATION.md)** - Detailed AMM mechanics
-- **[HOW_IT_WORKS.md](./HOW_IT_WORKS.md)** - Complete system explanation
-- **[ENDPOINTS_TESTING.md](./ENDPOINTS_TESTING.md)** - API testing guide
+ISC License © DexOrders contributors.
