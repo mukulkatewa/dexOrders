@@ -14,6 +14,7 @@ export class AutoTradingBot {
   private router = new MockDexRouter();
   private interval: NodeJS.Timeout | null = null;
 
+  // allow overriding the server base URL for non-local deployments
   constructor(
     private config: BotConfig,
     private baseUrl: string = process.env.API_URL || "http://localhost:3000"

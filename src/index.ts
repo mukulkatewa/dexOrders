@@ -708,6 +708,7 @@ async function start() {
     });
 
     fastify.post<{ Body: StartBotBody }>("/api/bots/start", async (request) => {
+      // start a new auto-trading bot with validated configuration
       const body = request.body;
       if (!body.tokenIn || !body.tokenOut) {
         throw new ValidationError("tokenIn and tokenOut are required");
@@ -743,6 +744,7 @@ async function start() {
       };
     });
 
+    // list all currently active bots
     fastify.get("/api/bots/active", async () => {
       return {
         count: botManager.getActiveBotsCount(),
@@ -750,6 +752,7 @@ async function start() {
       };
     });
 
+    // stop a running bot by id
     fastify.post<{ Body: StopBotBody }>(
       "/api/bots/stop",
       async (request, reply) => {
