@@ -181,6 +181,38 @@ Connect with `orderId` and optional `routingStrategy` to receive live updates.
 - Updates reserves after every simulated swap
 - Produces realistic slippage, price impact, and latency values
 
+### Liquidity Pools & DexOrders AMM
+
+**Pool Inventory**
+
+- Each DEX (Raydium, Meteora, Orca, Jupiter) owns three pools: `SOL/USDC`, `SOL/USDT`, `USDC/USDT`.
+- Pools are initialized with different reserve sizes and fee structures to mimic real-world depth.
+- Raydium: standard AMM fee (0.3%); Meteora: DLMM-style parameters; Orca: 0.2% “Whirlpool”; Jupiter: 0.25% aggregator fee.
+
+**Constant-Product Mechanics**
+
+- Pricing obeys `x * y = k`. Inputs are discounted by fee before interacting with reserves.
+- Output calculation: `Δy = y - (k / (x + Δx * (1 - fee)))`.
+- After each swap, reserves (`reserveA`, `reserveB`) are updated and persisted, so future quotes reflect slippage and price impact.
+
+**Price Discovery & Slippage**
+
+- Large trades consume more liquidity, shifting price unfavorably (higher slippage).
+- Smaller pools experience more aggressive price swings; larger pools remain stable.
+- The routing strategies can target high-liquidity pools to minimize slippage, leveraging these reserve snapshots.
+
+**Testing Liquidity Behavior**
+
+- Run `npx ts-node test-amm-price-changes.ts` to perform sequential buys/sells and observe:
+  - Reserve deltas per swap
+  - Price impact growth with trade size
+  - Reverse trades bringing prices back toward equilibrium
+
+**Why It Matters**
+
+- Even though DexOrders currently simulates DEX connectivity, the liquidity engine guarantees quotes and swaps behave like real constant-product pools.
+- This consistency ensures RoutingHub decisions (best price, lowest slippage, etc.) behave the same once hooked to on-chain liquidity or real APIs.
+
 Testing price dynamics:
 
 ```bash
