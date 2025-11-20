@@ -1,4 +1,4 @@
-# DexOrders – Solana DEX Order Engine
+# DexOrders – Worker Server Architecture
 
 DexOrders is a production-focused Solana order execution engine that:
 
