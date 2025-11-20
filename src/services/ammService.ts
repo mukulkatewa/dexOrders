@@ -1,4 +1,3 @@
-// src/services/ammService.ts
 // AMM Service - Implements constant product formula (x * y = k) for liquidity pools
 
 export interface LiquidityPool {
