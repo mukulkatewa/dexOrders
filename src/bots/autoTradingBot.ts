@@ -14,7 +14,10 @@ export class AutoTradingBot {
   private router = new MockDexRouter();
   private interval: NodeJS.Timeout | null = null;
 
-  constructor(private config: BotConfig) {}
+  constructor(
+    private config: BotConfig,
+    private baseUrl: string = process.env.API_URL || "http://localhost:3000"
+  ) {}
 
   start() {
     console.log(
@@ -23,34 +26,45 @@ export class AutoTradingBot {
 
     this.interval = setInterval(async () => {
       try {
-        // Get a quote and simulate Raydium quote by forcing dex filter
-        const allQuotes: DexQuote[] = [];
-        // Get multiple quotes so we can choose the desired dex for each
-        for (let i = 0; i < 5; i++) {
-          const quote = await this.router.getBestQuote(
-            this.config.tokenIn,
-            this.config.tokenOut,
-            this.config.amountIn
+        // Fetch quotes from all DEXes for the configured pair
+        const quotes = await this.router.getQuotes(
+          this.config.tokenIn,
+          this.config.tokenOut,
+          this.config.amountIn
+        );
+
+        const raydiumQuote = quotes.find((q) => q.dex === "raydium");
+        const meteoraQuote = quotes.find((q) => q.dex === "meteora");
+        const orcaQuote = quotes.find((q) => q.dex === "orca");
+        const jupiterQuote = quotes.find((q) => q.dex === "jupiter");
+
+        if (!raydiumQuote || !meteoraQuote || !orcaQuote || !jupiterQuote) {
+          console.warn(
+            "Missing quote for one or more DEXes",
+            quotes.map((q) => q.dex)
           );
-          allQuotes.push(quote);
+          return;
         }
 
-        // Filter quotes for Raydium and Meteora by dex name (mock simulation)
-        const raydiumQuote =
-          allQuotes.find((q) => q.dex === "raydium") || allQuotes[0];
-        const meteoraQuote =
-          allQuotes.find((q) => q.dex === "meteora") || allQuotes[0];
-
-        // For demo, pick max price from fetched quotes per dex
-        // Better to refactor getBestQuote method in future to return specific dex prices
-        const bestPrice = Math.max(raydiumQuote.price, meteoraQuote.price);
+        const bestPrice = Math.max(
+          raydiumQuote.price,
+          meteoraQuote.price,
+          orcaQuote.price,
+          jupiterQuote.price
+        );
 
         console.log(
           `Raydium price: ${raydiumQuote.price.toFixed(
             6
           )}, Meteora price: ${meteoraQuote.price.toFixed(
             6
-          )}, Best: ${bestPrice.toFixed(6)}, Target: ${this.config.targetPrice}`
+          )}, Orca price: ${orcaQuote.price.toFixed(
+            6
+          )}, Jupiter price: ${jupiterQuote.price.toFixed(
+            6
+          )}, Best: ${bestPrice.toFixed(
+            6
+          )}, Target: ${this.config.targetPrice}`
         );
 
         const triggered =
@@ -73,7 +87,8 @@ export class AutoTradingBot {
   private async executeOrder(): Promise<void> {
     try {
       // First, create the order via HTTP POST
-      const response = await fetch("http://localhost:3000/api/orders/execute", {
+      const httpBaseUrl = this.baseUrl.replace(/\/+$/, "");
+      const response = await fetch(`${httpBaseUrl}/api/orders/execute`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -106,8 +121,9 @@ export class AutoTradingBot {
 
       // Then connect to WebSocket with the orderId
       return new Promise((resolve, reject) => {
+        const wsBaseUrl = httpBaseUrl.replace(/^http/, "ws");
         const ws = new WebSocket(
-          `ws://localhost:3000/api/orders/execute?orderId=${orderId}`
+          `${wsBaseUrl}/api/orders/execute?orderId=${orderId}`
         );
 
         ws.on("open", () => {

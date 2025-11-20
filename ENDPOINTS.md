@@ -128,7 +128,7 @@ curl -X POST http://localhost:3000/api/bots/start \
         "tokenOut": "USDC",
         "amountIn": 100,
         "triggerCondition": "below",
-        "targetPrice": 0.051
+        "targetPrice": 50.4
       }'
 
 # Response:
