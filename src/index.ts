@@ -20,15 +20,28 @@ import { ArbitrageBot } from "./bots/arbitrageBot";
 import { BotManager } from "./bots/botManager";
 import { Database } from "./database/db";
 import { OrderRepository } from "./repositories/orderRepository";
+import {
+  BacktestRepository,
+  ListRunFilters,
+} from "./repositories/backtestRepository";
 import { errorHandler } from "./services/errorHandler";
 import { RoutingHub } from "./services/hub";
 import { MockDexRouter } from "./services/mockDexRouter";
 import { OrderQueue } from "./services/orderQueue";
 import { RedisService } from "./services/redisService";
+import { HistoricalDataService } from "./services/historicalDataService";
+import { PerformanceAnalyzer } from "./services/performanceAnalyzer";
+import { BacktestingEngine } from "./services/backtestingEngine";
 
 // Types
 import { NotFoundError, ValidationError } from "./errors/customErrors";
-import { Order, OrderRequest, RoutingStrategy } from "./types";
+import {
+  BacktestConfig,
+  BacktestInterval,
+  Order,
+  OrderRequest,
+  RoutingStrategy,
+} from "./types";
 
 // Workers
 import { createJupiterWorker } from "./workers/jupiterWorker";
@@ -56,6 +69,34 @@ interface ArbitrageQuery {
   thresholdPercent?: string;
 }
 
+interface BacktestListQuery {
+  strategy?: RoutingStrategy;
+  status?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+interface BacktestTradesQuery {
+  limit?: string;
+  offset?: string;
+}
+
+interface BacktestCompareBody {
+  backtestIds: string[];
+}
+
+interface GenerateDataBody {
+  dexes: string[];
+  tokenPairs: Array<{ tokenA: string; tokenB: string }>;
+  startDate: string;
+  endDate: string;
+  intervalMinutes?: number;
+  baseReserves?: number;
+  basePrice?: number;
+  volatility?: number;
+  fee?: number;
+}
+
 // Initialize Fastify
 const fastify = Fastify({
   logger: {
@@ -66,10 +107,14 @@ const fastify = Fastify({
 // Global service instances
 let database: Database;
 let orderRepository: OrderRepository;
+let backtestRepository: BacktestRepository;
 let redisService: RedisService;
 let orderQueue: OrderQueue;
 let dexWorkers: Worker[] = [];
 let routingHub: RoutingHub;
+let historicalDataService: HistoricalDataService;
+let performanceAnalyzer: PerformanceAnalyzer;
+let backtestingEngine: BacktestingEngine;
 const botManager = new BotManager();
 const defaultArbitrageBot = new ArbitrageBot();
 
@@ -81,6 +126,12 @@ const ROUTING_STRATEGIES: RoutingStrategy[] = [
   "HIGHEST_LIQUIDITY",
   "FASTEST_EXECUTION",
 ];
+
+const BACKTEST_INTERVALS: BacktestInterval[] = ["1m", "5m", "1h", "1d"];
+const BACKTEST_STATUSES = ["running", "completed", "failed"];
+const MAX_BACKTEST_LIMIT = 1000;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
  * Validate incoming order requests
@@ -118,6 +169,99 @@ function validateOrderRequest(body: any): asserts body is OrderRequest {
   }
 }
 
+function parseBacktestConfig(body: any): BacktestConfig {
+  if (!body) {
+    throw new ValidationError("Backtest configuration is required");
+  }
+
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  if (!name) {
+    throw new ValidationError("name is required");
+  }
+
+  const strategy: RoutingStrategy = body.strategy || "BEST_PRICE";
+  if (!ROUTING_STRATEGIES.includes(strategy)) {
+    throw new ValidationError("strategy is invalid");
+  }
+
+  const interval: BacktestInterval = body.interval;
+  if (!BACKTEST_INTERVALS.includes(interval)) {
+    throw new ValidationError("interval is invalid");
+  }
+
+  const tokenPair = body.tokenPair;
+  if (
+    !tokenPair ||
+    typeof tokenPair.tokenIn !== "string" ||
+    typeof tokenPair.tokenOut !== "string"
+  ) {
+    throw new ValidationError("tokenPair.tokenIn and tokenPair.tokenOut are required");
+  }
+
+  if (tokenPair.tokenIn === tokenPair.tokenOut) {
+    throw new ValidationError("tokenPair tokens must be different");
+  }
+
+  const startDate = new Date(body.startDate);
+  const endDate = new Date(body.endDate);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    throw new ValidationError("startDate and endDate must be valid ISO strings");
+  }
+  if (startDate >= endDate) {
+    throw new ValidationError("startDate must be earlier than endDate");
+  }
+
+  const initialCapital = Number(body.initialCapital);
+  if (!Number.isFinite(initialCapital) || initialCapital <= 0) {
+    throw new ValidationError("initialCapital must be a positive number");
+  }
+
+  const tradeSize = Number(body.tradeSize);
+  if (!Number.isFinite(tradeSize) || tradeSize <= 0) {
+    throw new ValidationError("tradeSize must be a positive number");
+  }
+
+  const maxSlippage = Number(body.maxSlippage ?? 0.02);
+  if (!Number.isFinite(maxSlippage) || maxSlippage < 0 || maxSlippage > 1) {
+    throw new ValidationError("maxSlippage must be between 0 and 1");
+  }
+
+  return {
+    name,
+    strategy,
+    startDate,
+    endDate,
+    interval,
+    initialCapital,
+    tokenPair: {
+      tokenIn: tokenPair.tokenIn,
+      tokenOut: tokenPair.tokenOut,
+    },
+    tradeSize,
+    maxSlippage,
+    tradingRules: body.tradingRules,
+  };
+}
+
+function assertUuid(value: string, label: string = "id"): void {
+  if (!value || !UUID_REGEX.test(value)) {
+    throw new ValidationError(`${label} must be a valid UUID`);
+  }
+}
+
+function startAsyncBacktest(config: BacktestConfig, runId: string): void {
+  if (!backtestingEngine) {
+    throw new Error("Backtesting engine is not initialized");
+  }
+  setImmediate(() => {
+    backtestingEngine!
+      .runBacktest(config, runId)
+      .catch((error) =>
+        console.error(`[BacktestingEngine] Run ${runId} failed`, error)
+      );
+  });
+}
+
 /**
  * Initialize backend services
  */
@@ -128,6 +272,9 @@ async function initializeServices() {
   database = new Database();
   await database.initialize();
   orderRepository = new OrderRepository(database.getPool());
+  backtestRepository = new BacktestRepository(database.getPool());
+  historicalDataService = new HistoricalDataService(database.getPool());
+  performanceAnalyzer = new PerformanceAnalyzer();
   console.log("[Init] ✓ Database ready");
 
   // Redis
@@ -150,6 +297,15 @@ async function initializeServices() {
   // RoutingHub
   routingHub = new RoutingHub();
   console.log("[Init] ✓ RoutingHub ready");
+
+  backtestingEngine = new BacktestingEngine(
+    historicalDataService,
+    routingHub,
+    httpDexRouter,
+    backtestRepository,
+    performanceAnalyzer
+  );
+  console.log("[Init] ✓ Backtesting engine ready");
 
   // DEX Workers
   await initializeDexWorkers();
@@ -918,6 +1074,155 @@ async function start() {
       }
     );
 
+    /**
+     * POST /api/backtest/run - Start a new backtest asynchronously
+     */
+    fastify.post<{ Body: any }>("/api/backtest/run", async (request, reply) => {
+      const config = parseBacktestConfig(request.body);
+      const runId = await backtestRepository.createRun(config);
+      startAsyncBacktest(config, runId);
+      reply.code(202);
+      return { backtestId: runId, status: "running" };
+    });
+
+    /**
+     * GET /api/backtest/:id - Retrieve backtest result
+     */
+    fastify.get<{ Params: { id: string } }>(
+      "/api/backtest/:id",
+      async (request) => {
+        const { id } = request.params;
+        assertUuid(id, "backtestId");
+        return backtestRepository.getResult(id);
+      }
+    );
+
+    /**
+     * GET /api/backtest/:id/trades - Paginated trades for a run
+     */
+    fastify.get<{
+      Params: { id: string };
+      Querystring: BacktestTradesQuery;
+    }>("/api/backtest/:id/trades", async (request) => {
+      const { id } = request.params;
+      assertUuid(id, "backtestId");
+      const limit = Math.min(
+        parseInt(request.query.limit || "100"),
+        MAX_BACKTEST_LIMIT
+      );
+      const offset = Math.max(parseInt(request.query.offset || "0"), 0);
+      const trades = await backtestRepository.getTrades(id, limit, offset);
+      return {
+        trades,
+        pagination: { limit, offset, count: trades.length },
+      };
+    });
+
+    /**
+     * GET /api/backtest - List backtest runs with optional filters
+     */
+    fastify.get<{ Querystring: BacktestListQuery }>(
+      "/api/backtest",
+      async (request) => {
+        const filters: ListRunFilters = {};
+        if (request.query.strategy) {
+          const strategy = request.query.strategy;
+          if (!ROUTING_STRATEGIES.includes(strategy)) {
+            throw new ValidationError("strategy filter is invalid");
+          }
+          filters.strategy = strategy;
+        }
+        if (request.query.status) {
+          if (!BACKTEST_STATUSES.includes(request.query.status)) {
+            throw new ValidationError("status filter is invalid");
+          }
+          filters.status = request.query.status;
+        }
+        if (request.query.startDate) {
+          const start = new Date(request.query.startDate);
+          if (Number.isNaN(start.getTime())) {
+            throw new ValidationError("startDate filter is invalid");
+          }
+          filters.startDate = start;
+        }
+        if (request.query.endDate) {
+          const end = new Date(request.query.endDate);
+          if (Number.isNaN(end.getTime())) {
+            throw new ValidationError("endDate filter is invalid");
+          }
+          filters.endDate = end;
+        }
+        const runs = await backtestRepository.listRuns(filters);
+        return { runs, count: runs.length };
+      }
+    );
+
+    /**
+     * POST /api/backtest/compare - Compare multiple runs
+     */
+    fastify.post<{ Body: BacktestCompareBody }>(
+      "/api/backtest/compare",
+      async (request) => {
+        const { backtestIds } = request.body;
+        if (!Array.isArray(backtestIds) || backtestIds.length === 0) {
+          throw new ValidationError("backtestIds array is required");
+        }
+        backtestIds.forEach((id) => assertUuid(id, "backtestIds"));
+        const comparison = await backtestRepository.compareRuns(backtestIds);
+        return { comparison };
+      }
+    );
+
+    /**
+     * DELETE /api/backtest/:id - Delete a backtest run and its trades
+     */
+    fastify.delete<{ Params: { id: string } }>(
+      "/api/backtest/:id",
+      async (request) => {
+        const { id } = request.params;
+        assertUuid(id, "backtestId");
+        await backtestRepository.deleteRun(id);
+        return { backtestId: id, status: "deleted" };
+      }
+    );
+
+    /**
+     * POST /api/backtest/generate-data - Seed synthetic historical data
+     */
+    fastify.post<{ Body: GenerateDataBody }>(
+      "/api/backtest/generate-data",
+      async (request) => {
+        const body = request.body;
+        if (!Array.isArray(body.dexes) || body.dexes.length === 0) {
+          throw new ValidationError("dexes must be a non-empty array");
+        }
+        if (
+          !Array.isArray(body.tokenPairs) ||
+          body.tokenPairs.length === 0 ||
+          body.tokenPairs.some(
+            (pair) => !pair.tokenA || !pair.tokenB || pair.tokenA === pair.tokenB
+          )
+        ) {
+          throw new ValidationError("tokenPairs must include unique tokenA/tokenB values");
+        }
+        if (!body.startDate || !body.endDate) {
+          throw new ValidationError("startDate and endDate are required");
+        }
+        const snapshots = await historicalDataService.generateSyntheticData({
+          dexes: body.dexes,
+          tokenPairs: body.tokenPairs,
+          startDate: body.startDate,
+          endDate: body.endDate,
+          intervalMinutes: body.intervalMinutes,
+          baseReserves: body.baseReserves,
+          basePrice: body.basePrice,
+          volatility: body.volatility,
+          fee: body.fee,
+        });
+        return { created: snapshots.length };
+      }
+    );
+
     fastify.register(async function (fastifyInstance) {
       fastifyInstance.get(
         "/api/orders/execute",
@@ -1030,7 +1335,15 @@ async function start() {
     console.log("  GET  /api/orders/:orderId");
     console.log("  POST /api/orders/execute");
     console.log("  POST /api/quotes");
-    console.log("  WS   /api/orders/execute\n");
+    console.log("  WS   /api/orders/execute");
+    console.log("\nBacktesting Endpoints:");
+    console.log("  POST   /api/backtest/run");
+    console.log("  GET    /api/backtest/:id");
+    console.log("  GET    /api/backtest/:id/trades");
+    console.log("  GET    /api/backtest");
+    console.log("  POST   /api/backtest/compare");
+    console.log("  DELETE /api/backtest/:id");
+    console.log("  POST   /api/backtest/generate-data\n");
   } catch (error) {
     console.error("\n✗ Server startup error:", error);
     process.exit(1);

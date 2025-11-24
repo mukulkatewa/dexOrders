@@ -3,6 +3,7 @@
 // AMM Integration: Added liquidity pools and constant product formula
 
 import { AMMService, LiquidityPool } from "./ammService";
+import { HistoricalPoolSnapshot } from "../types";
 
 export interface DexQuote {
   dex: string;
@@ -674,6 +675,33 @@ export class MockDexRouter {
    */
   getSupportedDexes(): string[] {
     return ["raydium", "meteora", "orca", "jupiter"];
+  }
+
+  /**
+   * Sync liquidity pool state with historical snapshot data.
+   */
+  updatePoolFromSnapshot(snapshot: HistoricalPoolSnapshot): void {
+    const pool: LiquidityPool = {
+      tokenA: snapshot.tokenA,
+      tokenB: snapshot.tokenB,
+      reserveA: snapshot.reserveA,
+      reserveB: snapshot.reserveB,
+      totalLiquidity: snapshot.totalLiquidity,
+      fee: snapshot.fee,
+      dex: snapshot.dex,
+    };
+
+    const poolKey = `${pool.tokenA}-${pool.tokenB}-${pool.dex}`;
+    const reverseKey = `${pool.tokenB}-${pool.tokenA}-${pool.dex}`;
+
+    this.liquidityPools.set(poolKey, { ...pool });
+    this.liquidityPools.set(reverseKey, {
+      ...pool,
+      tokenA: pool.tokenB,
+      tokenB: pool.tokenA,
+      reserveA: pool.reserveB,
+      reserveB: pool.reserveA,
+    });
   }
 
   /**

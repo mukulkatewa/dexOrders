@@ -122,3 +122,85 @@ export interface UserPreferences {
   maxSlippage?: number;
   preferredDEX?: string;
 }
+
+export type BacktestInterval = '1m' | '5m' | '1h' | '1d';
+
+export interface BacktestConfig {
+  name: string;
+  strategy: RoutingStrategy;
+  startDate: Date;
+  endDate: Date;
+  interval: BacktestInterval;
+  initialCapital: number;
+  tokenPair: {
+    tokenIn: string;
+    tokenOut: string;
+  };
+  tradeSize: number;
+  maxSlippage: number;
+  tradingRules?: Record<string, unknown>;
+}
+
+export interface EquityPoint {
+  timestamp: string;
+  portfolioValue: number;
+}
+
+export interface BacktestTrade {
+  id: string;
+  backtestRunId: string;
+  executedAt: string;
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: number;
+  amountOut: number;
+  selectedDex: string;
+  executionPrice: number;
+  slippage: number;
+  pnl: number;
+  returnPercent: number;
+  portfolioValue: number;
+}
+
+export interface PerformanceMetrics {
+  totalReturn: number;
+  sharpeRatio: number;
+  maxDrawdown: number;
+  winRate: number;
+  totalTrades: number;
+  profitFactor: number;
+  avgReturn: number;
+  avgWinningTrade: number;
+  avgLosingTrade: number;
+}
+
+export interface HistoricalPoolSnapshot {
+  id: string;
+  timestamp: string;
+  dex: string;
+  tokenA: string;
+  tokenB: string;
+  reserveA: number;
+  reserveB: number;
+  totalLiquidity: number;
+  fee: number;
+  createdAt: string;
+}
+
+export interface BacktestResult {
+  id: string;
+  name: string;
+  strategy: RoutingStrategy;
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  finalCapital: number;
+  metrics: PerformanceMetrics;
+  trades: BacktestTrade[];
+  equityCurve: EquityPoint[];
+  status: string;
+  totalTrades: number;
+  createdAt: string;
+  updatedAt: string;
+  errorMessage?: string;
+}
