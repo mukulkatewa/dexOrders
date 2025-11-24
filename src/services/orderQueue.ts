@@ -90,6 +90,8 @@ export class OrderQueue {
       `[OrderQueue] Adding quote job to ${dex} queue for order ${orderId}`
     );
 
+
+    //add job with retry logic
     const job = await queue.add(
       "quote",
       {
@@ -172,7 +174,7 @@ export class OrderQueue {
   }
 
   /**
-   * Add quote jobs for all DEXs in parallel (Ani's pattern)
+   * Add quote jobs for all DEXs in parallel 
    * This is the key improvement: 4 workers fetch quotes simultaneously
    *
    * @param order - Order details
