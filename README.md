@@ -18,6 +18,7 @@ DexOrders is a production-focused Solana order execution engine that:
 | Parallel quotes  | Dedicated BullMQ queue per DEX to fetch quotes simultaneously                   |
 | Routing policies | BEST_PRICE · LOWEST_SLIPPAGE · HIGHEST_LIQUIDITY · FASTEST_EXECUTION            |
 | Liquidity engine | DexOrders Liquidity Engine (constant product `x*y=k`) with live reserve updates |
+| Backtesting      | Historical strategy testing with performance analytics and synthetic data generation |
 | Persistence      | Orders stored in PostgreSQL, hot state cached in Redis                          |
 | Observability    | WebSocket status: pending → routing → building → submitted → confirmed          |
 
@@ -71,7 +72,11 @@ MockDexRouter + DexOrders Liquidity Engine
 | `src/services/mockDexRouter.ts`       | Simulated DEX integrations                                      |
 | `src/services/ammService.ts`          | DexOrders Liquidity Engine math (`x*y=k`)                       |
 | `src/services/hub.ts`                 | Tuple-based routing strategies                                  |
+| `src/services/backtestingEngine.ts`   | Backtest orchestration and simulation                           |
+| `src/services/historicalDataService.ts` | Historical pool snapshot management                           |
+| `src/services/performanceAnalyzer.ts` | Performance metrics calculation                                |
 | `src/repositories/orderRepository.ts` | Order persistence                                               |
+| `src/repositories/backtestRepository.ts` | Backtest and trade persistence                                |
 | `src/workers/*.ts`                    | Raydium/Meteora/Orca/Jupiter workers (quotes + swaps)           |
 | `src/bots/*.ts`                       | Automation layer (auto-trader, arbitrage bot, bot manager)      |
 
@@ -163,7 +168,180 @@ Connect with `orderId` and optional `routingStrategy` to receive live updates.
 
 ---
 
-## 6. Routing Strategies
+## 6. Backtesting System
+
+DexOrders includes a comprehensive backtesting system that allows you to test trading strategies against historical market data. The system simulates trades using historical liquidity pool states and calculates performance metrics.
+
+### Features
+
+- **Historical Data Management**: Store and retrieve historical liquidity pool snapshots
+- **Strategy Testing**: Test all 4 routing strategies (BEST_PRICE, LOWEST_SLIPPAGE, HIGHEST_LIQUIDITY, FASTEST_EXECUTION) against historical data
+- **Performance Analytics**: Calculate comprehensive metrics including Sharpe ratio, max drawdown, win rate, profit factor, and more
+- **Synthetic Data Generation**: Generate realistic historical data using random walk simulation
+- **Complete Trade History**: Track every trade with execution details, PnL, and portfolio value over time
+
+### Database Schema
+
+The backtesting system uses three main tables:
+
+- **`backtest_runs`**: Stores backtest configurations and aggregated results
+- **`backtest_trades`**: Stores individual trades executed during backtests
+- **`historical_pool_snapshots`**: Stores historical liquidity pool states for simulation
+
+### API Endpoints
+
+#### POST `/api/backtest/run`
+
+Start a new backtest asynchronously. Returns immediately with a backtest ID.
+
+```json
+{
+  "name": "SOL-USDC Strategy Test",
+  "strategy": "BEST_PRICE",
+  "startDate": "2024-01-01T00:00:00Z",
+  "endDate": "2024-04-01T00:00:00Z",
+  "interval": "1h",
+  "initialCapital": 10000,
+  "tokenPair": {
+    "tokenIn": "SOL",
+    "tokenOut": "USDC"
+  },
+  "tradeSize": 100,
+  "maxSlippage": 0.02
+}
+```
+
+**Response:**
+```json
+{
+  "backtestId": "0914db30-1c1d-4109-b76d-d11d7be0c9a6",
+  "status": "running"
+}
+```
+
+#### GET `/api/backtest/:id`
+
+Retrieve complete backtest results including metrics, trades, and equity curve.
+
+#### GET `/api/backtest/:id/trades`
+
+Get paginated trades for a backtest run.
+
+**Query Parameters:**
+- `limit` (default: 100, max: 1000)
+- `offset` (default: 0)
+
+#### GET `/api/backtest`
+
+List all backtest runs with optional filters.
+
+**Query Parameters:**
+- `strategy`: Filter by routing strategy
+- `status`: Filter by status (running, completed, failed)
+- `startDate`: Filter by start date
+- `endDate`: Filter by end date
+
+#### POST `/api/backtest/compare`
+
+Compare multiple backtest runs side-by-side.
+
+```json
+{
+  "backtestIds": ["id1", "id2", "id3"]
+}
+```
+
+#### POST `/api/backtest/generate-data`
+
+Generate synthetic historical liquidity data for testing.
+
+```json
+{
+  "dexes": ["raydium", "meteora", "orca"],
+  "tokenPairs": [
+    {"tokenA": "SOL", "tokenB": "USDC"},
+    {"tokenA": "ETH", "tokenB": "USDC"}
+  ],
+  "startDate": "2024-01-01T00:00:00Z",
+  "endDate": "2024-04-01T00:00:00Z",
+  "intervalMinutes": 60,
+  "volatility": 0.03,
+  "baseReserves": 4000000
+}
+```
+
+#### DELETE `/api/backtest/:id`
+
+Delete a backtest run and all associated trades.
+
+### Performance Metrics
+
+Each backtest calculates comprehensive performance metrics:
+
+- **Total Return**: Percentage gain/loss from initial capital
+- **Sharpe Ratio**: Risk-adjusted return metric
+- **Max Drawdown**: Maximum peak-to-trough decline
+- **Win Rate**: Percentage of profitable trades
+- **Profit Factor**: Ratio of total wins to total losses
+- **Average Return**: Mean return per trade
+- **Average Winning/Losing Trade**: Average profit/loss per trade
+
+### Usage Example
+
+```bash
+# 1. Generate historical data
+curl -X POST http://localhost:3000/api/backtest/generate-data \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dexes": ["raydium", "meteora", "orca"],
+    "tokenPairs": [{"tokenA": "SOL", "tokenB": "USDC"}],
+    "startDate": "2024-01-01T00:00:00Z",
+    "endDate": "2024-04-01T00:00:00Z",
+    "intervalMinutes": 60
+  }'
+
+# 2. Start a backtest
+curl -X POST http://localhost:3000/api/backtest/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "BEST_PRICE Strategy",
+    "strategy": "BEST_PRICE",
+    "startDate": "2024-01-01T00:00:00Z",
+    "endDate": "2024-04-01T00:00:00Z",
+    "interval": "1h",
+    "initialCapital": 10000,
+    "tokenPair": {"tokenIn": "SOL", "tokenOut": "USDC"},
+    "tradeSize": 100,
+    "maxSlippage": 0.02
+  }'
+
+# 3. Check backtest status (poll until status is "completed")
+curl http://localhost:3000/api/backtest/{backtestId}
+
+# 4. Get results
+curl http://localhost:3000/api/backtest/{backtestId}
+```
+
+### Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `src/services/historicalDataService.ts` | Manages historical pool snapshots and synthetic data generation |
+| `src/services/performanceAnalyzer.ts` | Calculates performance metrics from trade data |
+| `src/services/backtestingEngine.ts` | Orchestrates backtest execution and simulation |
+| `src/repositories/backtestRepository.ts` | Database operations for backtests and trades |
+
+### Configuration Options
+
+- **Interval**: `1m`, `5m`, `1h`, `1d` - Time between simulated trades
+- **Initial Capital**: Starting portfolio value
+- **Trade Size**: Amount to trade at each interval
+- **Max Slippage**: Maximum acceptable slippage (0-1)
+- **Strategy**: Routing strategy to test
+
+---
+
+## 7. Routing Strategies
 
 | Strategy             | Goal                | Formula                                               |
 | -------------------- | ------------------- | ----------------------------------------------------- |
@@ -174,7 +352,7 @@ Connect with `orderId` and optional `routingStrategy` to receive live updates.
 
 ---
 
-## 7. DexOrders Liquidity Engine
+## 8. DexOrders Liquidity Engine
 
 - Implements constant-product pricing (`x * y = k`)
 - Maintains 12 liquidity pools (SOL/USDC, SOL/USDT, USDC/USDT across 4 DEXs)
@@ -223,7 +401,7 @@ The script buys and sells in sequence, demonstrating how reserves and prices mov
 
 ---
 
-## 8. Testing & Tooling
+## 9. Testing & Tooling
 
 | Command                     | Description                   |
 | --------------------------- | ----------------------------- |
@@ -235,7 +413,7 @@ The script buys and sells in sequence, demonstrating how reserves and prices mov
 
 ---
 
-## 9. Project Structure
+## 10. Project Structure
 
 ```
 order-execution-engine-final/
@@ -245,14 +423,19 @@ order-execution-engine-final/
 │  ├─ database/
 │  │  ├─ db.ts
 │  │  └─ schema.sql
-│  ├─ repositories/orderRepository.ts
+│  ├─ repositories/
+│  │  ├─ orderRepository.ts
+│  │  └─ backtestRepository.ts
 │  ├─ services/
 │  │  ├─ ammService.ts
 │  │  ├─ hub.ts
 │  │  ├─ mockDexRouter.ts
 │  │  ├─ orderQueue.ts
 │  │  ├─ redisService.ts
-│  │  └─ errorHandler.ts
+│  │  ├─ errorHandler.ts
+│  │  ├─ historicalDataService.ts
+│  │  ├─ performanceAnalyzer.ts
+│  │  └─ backtestingEngine.ts
 │  ├─ workers/
 │  │  ├─ raydiumWorker.ts
 │  │  ├─ meteoraWorker.ts
@@ -269,7 +452,7 @@ order-execution-engine-final/
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom                       | Checks                                                                       |
 | ----------------------------- | ---------------------------------------------------------------------------- |
@@ -280,6 +463,6 @@ order-execution-engine-final/
 
 ---
 
-## 11. License
+## 12. License
 
 ISC License © DexOrders contributors.
