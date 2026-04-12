@@ -6,12 +6,15 @@ export class RedisService {
   private healthy: boolean = false;
 
   constructor() {
-    this.client = new Redis({
-      host: process.env.REDIS_HOST,
+    const opts: any = {
+      host: process.env.REDIS_HOST || 'localhost',
       port: parseInt(process.env.REDIS_PORT || '6379'),
-      password: process.env.REDIS_PASSWORD,
-      tls: { rejectUnauthorized: false },
-    });
+    };
+    if (process.env.REDIS_PASSWORD) opts.password = process.env.REDIS_PASSWORD;
+    if (process.env.REDIS_TLS === 'true') {
+      opts.tls = { rejectUnauthorized: false };
+    }
+    this.client = new Redis(opts);
     this.client.on('connect', () => {
       this.healthy = true;
     });

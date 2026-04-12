@@ -32,11 +32,9 @@ export class OrderQueue {
     this.connection = new IORedis({
       host: process.env.REDIS_HOST || "localhost",
       port: parseInt(process.env.REDIS_PORT || "6379"),
-      password: process.env.REDIS_PASSWORD,
+      password: process.env.REDIS_PASSWORD || undefined,
       maxRetriesPerRequest: null, // Required for BullMQ
-      tls: process.env.REDIS_HOST?.includes("upstash")
-        ? { rejectUnauthorized: false }
-        : undefined,
+      tls: process.env.REDIS_TLS === "true" ? { rejectUnauthorized: false } : undefined,
     });
 
     // Shared limiter configuration (10 jobs/sec ≈ 600 jobs/min across 4 queues)

@@ -10,6 +10,7 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 // Core dependencies
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import websocketPlugin from "@fastify/websocket";
 import { Worker } from "bullmq";
 import Fastify from "fastify";
@@ -347,7 +348,7 @@ async function initializeDexWorkers(): Promise<void> {
 function setupWorkerEventBridge(): void {
   console.log("[EventBridge] Setting up listener...");
 
-  (process as any).on("orderStatusUpdate", (update: any) => {
+  (process as any).on("orderStatusUpdate", async (update: any) => {
     const ws = orderQueue.getWebSocket(update.orderId);
 
     if (ws && ws.readyState === 1) {
@@ -359,6 +360,22 @@ function setupWorkerEventBridge(): void {
       } catch (error) {
         console.error("[EventBridge] ✗ Send failed:", error);
       }
+    }
+
+    // Persist status updates to database
+    try {
+      if (update.status === "confirmed" || update.status === "failed" ||
+          update.status === "submitted" || update.status === "building") {
+        await orderRepository.updateOrderStatus(update.orderId, update.status, {
+          selectedDex: update.selectedDex || update.dex,
+          amountOut: update.amountOut,
+          executedPrice: update.executionPrice,
+          txHash: update.txHash,
+        });
+        console.log(`[EventBridge] ✓ DB updated: ${update.orderId} → ${update.status}`);
+      }
+    } catch (err) {
+      console.error("[EventBridge] ✗ DB update failed:", err);
     }
   });
 
@@ -710,6 +727,11 @@ async function processCollectedQuotes(
       );
     }
 
+    // Update DB with selected DEX
+    await orderRepository.updateOrderStatus(orderId, "dex_selected", {
+      selectedDex: bestQuote.provider,
+    });
+
     // Get order details
     const order = await orderRepository.getOrderById(orderId);
     if (!order) {
@@ -765,6 +787,10 @@ async function processCollectedQuotes(
 async function registerPlugins() {
   await fastify.register(cors, { origin: true, credentials: true });
   await fastify.register(websocketPlugin);
+  await fastify.register(fastifyStatic, {
+    root: path.resolve(__dirname, "../public"),
+    prefix: "/",
+  });
   console.log("[Plugins] ✓ Registered");
 }
 
@@ -996,6 +1022,69 @@ async function start() {
         quote,
       };
     });
+
+    /**
+     * POST /api/quotes/compare - Get quotes from all 4 DEXs for comparison
+     */
+    fastify.post<{ Body: OrderRequest }>("/api/quotes/compare", async (request) => {
+      const body = request.body;
+      validateOrderRequest(body);
+      const strategy: RoutingStrategy = body.routingStrategy || "BEST_PRICE";
+
+      const allQuotes = await httpDexRouter.getQuotes(
+        body.tokenIn,
+        body.tokenOut,
+        body.amountIn
+      );
+
+      const bestQuote = routingHub.selectBestRoute(allQuotes, strategy);
+
+      return {
+        tokenIn: body.tokenIn,
+        tokenOut: body.tokenOut,
+        amountIn: body.amountIn,
+        routingStrategy: strategy,
+        best: bestQuote.provider,
+        quotes: allQuotes,
+      };
+    });
+
+    /**
+     * GET /api/prices/snapshot - Get current spot prices from all pools for a pair
+     */
+    fastify.get<{ Querystring: { tokenIn?: string; tokenOut?: string } }>(
+      "/api/prices/snapshot",
+      async (request) => {
+        const tokenIn = request.query.tokenIn || "SOL";
+        const tokenOut = request.query.tokenOut || "USDC";
+        const dexes = ["raydium", "meteora", "orca", "jupiter"];
+        const prices: Record<string, number> = {};
+
+        for (const dex of dexes) {
+          try {
+            const pools = httpDexRouter.getLiquidityPoolsByDex(dex);
+            const pool = pools.find(
+              (p) =>
+                (p.tokenA === tokenIn && p.tokenB === tokenOut) ||
+                (p.tokenA === tokenOut && p.tokenB === tokenIn)
+            );
+            if (pool) {
+              prices[dex] =
+                pool.tokenA === tokenIn
+                  ? pool.reserveB / pool.reserveA
+                  : pool.reserveA / pool.reserveB;
+            }
+          } catch {}
+        }
+
+        return {
+          tokenIn,
+          tokenOut,
+          timestamp: new Date().toISOString(),
+          prices,
+        };
+      }
+    );
 
     fastify.get<{ Querystring: { limit?: string; offset?: string } }>(
       "/api/orders",

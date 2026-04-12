@@ -38,4 +38,19 @@ temp/
 
 # Production
 *.tgz
-node_modules
+
+# Claude
+CLAUDE.md
+.claude/
+
+# Test scripts
+test-endpoints.sh
+test-liquidity-pools.sh
+test-phase3.sh
+test-amm-price-changes.ts
+TESTING_GUIDE.md
+
+# Misc
+Microsoft Windows*
+order-execution-engine.postman_collection.json
+nohup.out
